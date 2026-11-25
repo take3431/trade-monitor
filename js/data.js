@@ -8,8 +8,8 @@
 //     以後は直近1か月分の小さなデータだけを取りに行き、手元のデータに継ぎ足す。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261125104445';
-import { isUS } from './names.js?v=20261125104445';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261125111149';
+import { isUS } from './names.js?v=20261125111149';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = (code) => (isUS(code) ? code : `${code}.T`);
@@ -531,11 +531,18 @@ function refreshBase(code, prio) {
     }
     const base = await getStored(code, 'base');
     const lastT = base?.bars?.length ? base.bars[base.bars.length - 1][0] * 1000 : 0;
-    const full = !base || !base.bars?.length || now - (base.fullAt || 0) > 30 * 86400e3 || now - lastT > 25 * 86400e3;
-    // 継ぎ足しは通常「直近5日分」だけ（約1KB）。しばらく空いたときは1か月分
+    let full = !base || !base.bars?.length || now - (base.fullAt || 0) > 30 * 86400e3 || now - lastT > 25 * 86400e3;
+    // 継ぎ足しは通常「直近5日分」だけ（約1KB）。4日以上空いたときは1か月分
     const range = full ? '10y' : now - lastT < 4 * 86400e3 ? '5d' : '1mo';
-    const parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=${range}`,
-      { code, prio, what: full ? '日足10年分（初回）' : `日足の更新（直近${range === '5d' ? '5日' : '1か月'}）` }));
+    const why = !base?.bars?.length ? '日足10年分（初回）' : base.fullAt === 0 ? '日足10年分（分割・併合の反映）' : '日足10年分（定期の取り直し）';
+    let parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=${range}`,
+      { code, prio, what: full ? why : `日足の更新（直近${range === '5d' ? '5日' : '1か月'}）` }));
+    // 継ぎ足し分に含まれる確定済みの過去の終値が、保存済みと食い違えば分割・併合 → 10年分を取り直す
+    if (!full && splitDetected(base.bars, parsed.bars.slice(0, -1).map((b) => [b[0], b[4]]))) {
+      full = true;
+      parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=10y`,
+        { code, prio, what: '日足10年分（分割・併合を検知して取り直し）' }));
+    }
     const daily = full ? dedupeDaily(parsed.bars) : mergeTail(base.bars, parsed.bars);
     // 値が前回と同じ（取引が無かった等）なら、保存済みのデータは書き換えず取得時刻だけ更新する
     const lastOld = base?.bars?.[base.bars.length - 1];
@@ -595,6 +602,25 @@ function sparkResults(json) {
 }
 
 // 1銘柄分の spark の結果を、保存済みの日足に反映する。反映できなければ理由を返す
+/* 株式分割・併合の検知
+   Yahoo の過去の株価は、分割・併合があると分割後の基準に書き換わる。手元に保存した過去分は古い基準のままなので、
+   そのまま継ぎ足すとチャートに段差ができる。新しく届いた「確定済みの過去の終値」と保存済みの終値を同じ日で比べ、
+   3%以上食い違う日があれば分割・併合が起きたと判断して、その銘柄だけ10年分を取り直す（追加の通信は取り直しの1回だけ）。
+   ※通常、確定済みの終値は変わらない（配当では close は調整されない）。 */
+const SPLIT_TOLERANCE = 0.03;
+function splitDetected(storedBars, pairs) {
+  // pairs: [[timestamp(秒), 終値], ...]（当日分は値が動くので含めない）
+  if (!storedBars?.length || !pairs.length) return false;
+  const byDay = new Map(storedBars.slice(-40).map((b) => [dayKey(b[0] * 1000), b[4]]));
+  for (const [t, c] of pairs) {
+    const old = byDay.get(dayKey(t * 1000));
+    if (old == null || c == null || !old || !c) continue;
+    if (Math.abs(old / c - 1) > SPLIT_TOLERANCE) return true;
+  }
+  return false;
+}
+const needsFull = (b) => !b?.bars?.length || Date.now() - (b.fullAt || 0) > 30 * 86400e3;
+
 function mergeSpark(base, x, approxOpen) {
   const ts = x.timestamp;
   const lastT = ts[ts.length - 1];
@@ -607,6 +633,8 @@ function mergeSpark(base, x, approxOpen) {
   if (ts.length >= 2 && lastDay < dayKey(ts[ts.length - 2] * 1000)) return { need: 'gap' };
   const m = x.meta;
   const closes = x.indicators?.quote?.[0]?.close || [];
+  // 当日より前の終値（確定済み）を保存済みの値と比べて、分割・併合を検知
+  if (splitDetected(bars, ts.slice(0, -1).map((t, i) => [t, closes[i]]))) return { need: 'split' };
   const price = m.regularMarketPrice ?? closes[closes.length - 1];
   if (price == null) return { need: 'gap' };
   let open;
@@ -652,6 +680,13 @@ async function runBatch(codes, prio) {
     if (!x || !base?.bars?.length) { leftover.add(c); continue; }
     const m = mergeSpark(base, x, cfg.approxOpen);
     if (m.need === 'open' && cfg.approxOpen) { needOpen.push(c); pending.push([c, x, base]); continue; }
+    if (m.need === 'split') {
+      // 取り直すまでの間も表示は続けられるよう、データは残したまま「要取り直し」の印を付ける
+      record({ t: Date.now(), code: c, what: '株式分割・併合を検知（次の表示で10年分を取り直し）', route: '—', ok: true, ms: 0, note: '' });
+      await putStored(c, 'base', { ...base, fullAt: 0, fetchedAt: 0 });
+      leftover.add(c);
+      continue;
+    }
     if (m.need) { leftover.add(c); continue; }
     await saveMerged(c, base, m, now);
   }
@@ -684,6 +719,7 @@ async function refreshViaBatch(code, prio) {
   const now = Date.now();
   const own = await getStored(code, 'base');
   // 正確モードで当日の足が無い（その日初めての更新）なら、まとめて取得では始値が取れないので個別に取得
+  if (needsFull(own)) return true;
   if (!cfg.approxOpen && !hasTodayBar(own)) return true;
   const list = [code];
   for (const c of cfg.upcoming()) {
@@ -691,6 +727,7 @@ async function refreshViaBatch(code, prio) {
     if (list.includes(c) || batchWaiters.has(c)) continue;
     const b = await getStored(c, 'base');
     if (!b?.bars?.length || isFresh(b.fetchedAt, cfg.ttlMs, now, mkt(c))) continue;
+    if (needsFull(b)) continue; // 10年分の取り直しが必要な銘柄は、表示するときに個別に取得する
     if (!cfg.approxOpen && !hasTodayBar(b)) continue; // その銘柄を表示するときに個別に取得する
     list.push(c);
   }
