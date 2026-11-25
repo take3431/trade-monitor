@@ -9,8 +9,8 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261125150209';
-import { yahooSymbol, marketOfCode } from './names.js?v=20261125150209';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261125152443';
+import { yahooSymbol, marketOfCode } from './names.js?v=20261125152443';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = yahooSymbol;
@@ -33,6 +33,7 @@ export const TF = {
 const cfg = {
   proxy: '', fallback: true, demo: false, ttlMs: 120e3, timeout: 15000,
   approxOpen: false,          // true：当日の始値を「最初の1分の値」で近似（表示対象が多いとき）
+  liveAhead: 5,               // 取引時間中、まとめて取得に含めるのは「この先この件数以内に表示する銘柄」だけ
   upcoming: () => [],         // この先表示される銘柄（まとめて取得の対象を選ぶのに使う）
 };
 export function configure(o) { Object.assign(cfg, o); }
@@ -757,6 +758,14 @@ async function runBatch(codes, prio) {
     await saveMerged(c, base, m, now);
   }
   if (needOpen.length) {
+    // 始値（1日1回だけ必要）は、この先表示する銘柄の分もまとめて最大20銘柄で1回にする（通信回数を減らす）
+    const today = dayKey(now);
+    for (const c of cfg.upcoming()) {
+      if (needOpen.length >= BATCH_MAX) break;
+      if (needOpen.includes(c) || openCache.get(`${ySym(c)}|${today}`) != null) continue;
+      const b = await getStored(c, 'base');
+      if (b?.bars?.length && !hasTodayBar(b) && dataLive(now, mkt(c))) needOpen.push(c);
+    }
     try { await schedule(prio, () => fetchApproxOpens(needOpen, prio)); } catch { /* 取れなければ個別取得へ */ }
     for (const [c, x, base] of pending) {
       const m = mergeSpark(base, x, true, c);
@@ -788,8 +797,13 @@ async function refreshViaBatch(code, prio) {
   if (needsFull(own, code)) return true;
   if (!cfg.approxOpen && !hasTodayBar(own)) return true;
   const list = [code];
+  let pos = 0;
   for (const c of cfg.upcoming()) {
     if (list.length >= BATCH_MAX) break;
+    pos++;
+    // 取引時間中は、2分以内に表示する銘柄だけ（それより先の銘柄は、表示するころには古くなって取り直すことになるため）。
+    // 時間外は値が変わらないので、20銘柄まとめて取っておく
+    if (pos > cfg.liveAhead && dataLive(now, mkt(c))) continue;
     if (list.includes(c) || batchWaiters.has(c)) continue;
     const b = await getStored(c, 'base');
     if (!b?.bars?.length || isFresh(b.fetchedAt, cfg.ttlMs, now, mkt(c))) continue;

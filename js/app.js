@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261125150209';
-import * as D from './data.js?v=20261125150209';
-import { Stage, themeColors } from './chart.js?v=20261125150209';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125150209';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125150209';
+import * as M from './market.js?v=20261125152443';
+import * as D from './data.js?v=20261125152443';
+import { Stage, themeColors } from './chart.js?v=20261125152443';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125152443';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125152443';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -108,12 +108,14 @@ function applyLook() {
   $('demoBadge').hidden = !DEMO;
 }
 // 表示対象がこの数を超えたら、当日の始値を近似にして通信回数を抑える（1日300回の上限に収めるため）
-const EXACT_OPEN_MAX = 100;
+const EXACT_OPEN_MAX = 50; // 1銘柄ずつ始値を取ると、それだけで1日の通信が銘柄数ぶん増えるため
 const approxMode = () => enabledCount() > EXACT_OPEN_MAX;
 function applyData() {
   D.configure({
     demo: DEMO, ttlMs: CACHE_MIN * 60e3,
     approxOpen: approxMode(),
+    // 取引時間中にまとめて取得する範囲：2分（データの有効時間）以内に表示する銘柄の数＋1
+    liveAhead: Math.min(20, Math.ceil((CACHE_MIN * 60) / settings.interval) + 1),
     // まとめて取得の対象：この先表示される20銘柄（表示中の銘柄を含む）
     upcoming: () => [st.code, ...upcomingFrom(20)].filter(Boolean),
   });
