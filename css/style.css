@@ -298,3 +298,11 @@ tr.drag-placeholder td > * { visibility: hidden; }
 .net-rules ul { margin: .4rem 0 0; padding-left: 1.2rem; line-height: 1.6; }
 
 #transferSection .row { justify-content: flex-start; }
+
+/* アプリ内の確認画面 */
+.ask-dialog { width: min(30rem, 92vw); }
+.ask-dialog p { margin: 0 0 .8rem; line-height: 1.6; white-space: pre-wrap; }
+.ask-dialog textarea { width: 100%; box-sizing: border-box; padding: .5rem .6rem; border-radius: 7px; border: 1px solid var(--border2);
+  background: var(--bg); color: var(--text); font: inherit; resize: vertical; -webkit-user-select: text; user-select: text; }
+.ask-dialog textarea[hidden] { display: none; }
+.btn.danger-fill { background: var(--danger); border-color: var(--danger); color: #fff; }

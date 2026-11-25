@@ -7,15 +7,15 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="TRADE MONITOR">
-<meta name="app-version" content="20261125063826">
+<meta name="app-version" content="20261125100735">
 <meta name="theme-color" content="#0d1117">
 <title>TRADE MONITOR</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-180.png">
-<link rel="stylesheet" href="css/style.css?v=20261125063826">
-<script src="vendor/lightweight-charts.standalone.production.js?v=20261125063826"></script>
-<script type="module" src="js/app.js?v=20261125063826"></script>
+<link rel="stylesheet" href="css/style.css?v=20261125100735">
+<script src="vendor/lightweight-charts.standalone.production.js?v=20261125100735"></script>
+<script type="module" src="js/app.js?v=20261125100735"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -100,7 +100,7 @@
           <button data-v="20">20s</button><button data-v="30">30s</button><button data-v="60">60s</button><button data-v="90">90s</button><button data-v="custom">カスタム</button>
         </div>
         <label class="row">切り替え間隔 (10〜300秒)<input type="number" id="inpInterval" min="10" max="300" step="1" inputmode="numeric"></label>
-        <label class="row">市場時間外の自動巡回
+        <label class="row">市場時間外の自動切替
           <select id="selOffHours"><option value="continue">継続する</option><option value="stop">停止する</option></select>
         </label>
       </section>
@@ -181,6 +181,17 @@
       <li>データの取得先：Yahoo Finance（中継：r.jina.ai）。東証は約20分遅れです。</li>
     </ul>
   </details>
+</dialog>
+
+<dialog id="askDialog" class="ask-dialog">
+  <form method="dialog" id="askForm">
+    <p id="askMsg"></p>
+    <textarea id="askInput" rows="1" autocomplete="off" spellcheck="false"></textarea>
+    <div class="actions">
+      <button type="button" class="btn" id="askCancel">キャンセル</button>
+      <button type="submit" class="btn primary" id="askOk">OK</button>
+    </div>
+  </form>
 </dialog>
 
 <div id="toast" class="toast" hidden></div>

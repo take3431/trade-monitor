@@ -1,7 +1,7 @@
-import * as M from './market.js?v=20261125063826';
-import * as D from './data.js?v=20261125063826';
-import { Stage, themeColors } from './chart.js?v=20261125063826';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125063826';
+import * as M from './market.js?v=20261125100735';
+import * as D from './data.js?v=20261125100735';
+import { Stage, themeColors } from './chart.js?v=20261125100735';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125100735';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -98,7 +98,7 @@ function marketsInList() { return [...new Set(list.filter((x) => x.enabled).map(
 function posText(code) {
   const en = list.filter((x) => x.enabled);
   const i = en.findIndex((x) => x.code === code);
-  return i >= 0 ? `${i + 1} / ${en.length}` : '巡回対象外';
+  return i >= 0 ? `${i + 1} / ${en.length}` : '切替対象外';
 }
 
 function showEmpty(empty) {
@@ -192,8 +192,8 @@ async function prefetch(code) {
 function pauseReason(now) {
   if (st.settingsOpen) return '設定中';
   if (st.paused) return '一時停止中';
-  if (now < st.touchUntil) return '操作中のため一時停止';
-  if (settings.offHours === 'stop' && !marketsInList().some((m) => M.marketPhase(now, m).open)) return '市場時間外のため停止';
+  if (now < st.touchUntil) return '操作中（一時停止）';
+  if (settings.offHours === 'stop' && !marketsInList().some((m) => M.marketPhase(now, m).open)) return '時間外のため停止中';
   if (document.hidden) return '待機中';
   return null;
 }
@@ -278,7 +278,7 @@ function renderCountdown(now = Date.now()) {
   const r = pauseReason(now);
   const el = $('countdown');
   el.classList.toggle('paused', !!r);
-  el.textContent = r ? `自動更新: ${settings.interval}s（${r}）` : `自動更新: ${settings.interval}s (残り ${Math.max(0, st.remaining)}秒)`;
+  el.textContent = r || `残り ${Math.max(0, st.remaining)}秒`;
   $('pauseUse').setAttribute('href', st.paused ? '#i-play' : '#i-pause');
   $('btnPause').classList.toggle('on', st.paused);
 }
@@ -441,18 +441,46 @@ $('listBody').addEventListener('click', (e) => {
   const code = tr.dataset.code;
   const item = list.find((x) => x.code === code);
   if (e.target.closest('.del')) {
-    if (!confirm(`${code} ${item.name} を一覧から削除しますか？`)) return;
-    list = list.filter((x) => x.code !== code);
-    saveList();
-    renderList();
+    ask(`${code} ${item.name} を一覧から削除しますか？`, { ok: '削除する', danger: true }).then((yes) => {
+      if (!yes) return;
+      list = list.filter((x) => x.code !== code);
+      saveList();
+      renderList();
+    });
   } else if (e.target.closest('.rename')) {
-    const name = prompt(`${code} の表示名`, item.name || '');
-    if (name == null) return;
-    item.name = name.trim();
-    saveList();
-    renderList();
+    ask(`${code} の表示名`, { input: item.name || '' }).then((name) => {
+      if (name == null) return;
+      item.name = name.trim();
+      saveList();
+      renderList();
+    });
   }
 });
+
+/* ---------------- アプリ内の確認画面 ----------------
+   ブラウザ標準の確認画面（confirm / prompt / alert）は Android で全画面表示を解除してしまうため使わない。
+   ask(文言) → OK なら true / キャンセルなら false
+   ask(文言, { input: 初期値 }) → 入力した文字 / キャンセルなら null
+   ask(文言, { alert: true }) → OK ボタンだけ */
+function ask(msg, { input = null, ok = 'OK', danger = false, alert: only = false, rows = 1 } = {}) {
+  const d = $('askDialog');
+  $('askMsg').textContent = msg;
+  const inp = $('askInput');
+  inp.hidden = input == null;
+  inp.value = input ?? '';
+  inp.rows = rows;
+  $('askOk').textContent = ok;
+  $('askOk').classList.toggle('danger-fill', danger);
+  $('askCancel').hidden = only;
+  d.showModal();
+  if (input != null) setTimeout(() => { inp.focus(); inp.select(); }, 50);
+  return new Promise((resolve) => {
+    const done = (v) => { d.close(); $('askForm').onsubmit = null; $('askCancel').onclick = null; d.oncancel = null; resolve(v); };
+    $('askForm').onsubmit = (e) => { e.preventDefault(); done(input != null ? inp.value : true); };
+    $('askCancel').onclick = () => done(input != null ? null : false);
+    d.oncancel = (e) => { e.preventDefault(); done(input != null ? null : false); };
+  });
+}
 
 // ドラッグ＆ドロップ並び替え（スマホのリスト操作と同じ動き）
 //  つまむと行が浮き上がり指に付いてくる。他の行は滑らかによけ、離すと元の場所へ収まる。
@@ -676,7 +704,7 @@ function renderNet() {
     if (next && next !== cur) {
       const lead = Math.min(PREFETCH_SEC, settings.interval - 2);
       const wait = st.remaining - lead;
-      lines.push(pauseReason(now) ? `次の ${esc(next)}：巡回停止中のため事前取得は待機中` : wait > 0 ? `次の ${esc(next)}：あと${wait}秒で事前取得（必要な場合のみ）` : `次の ${esc(next)}：事前取得済み、または取得不要`);
+      lines.push(pauseReason(now) ? `次の ${esc(next)}：自動切替が止まっているため事前取得は待機中` : wait > 0 ? `次の ${esc(next)}：あと${wait}秒で事前取得（必要な場合のみ）` : `次の ${esc(next)}：事前取得済み、または取得不要`);
     }
   }
   const missing = list.filter((x) => x.enabled && !haveData.has(x.code)).length;
@@ -816,15 +844,15 @@ if (!standalone && fsSupported) {
 $('btnExport').addEventListener('click', async () => {
   const text = JSON.stringify({ app: 'trade-monitor', v: 1, list, settings });
   try { await navigator.clipboard.writeText(text); toast(`${list.length}銘柄と設定をコピーしました`); }
-  catch { prompt('次の文字をすべてコピーしてください', text); }
+  catch { await ask('次の文字をすべてコピーしてください', { input: text, alert: true, rows: 4 }); }
 });
-$('btnImport').addEventListener('click', () => {
-  const text = prompt('「銘柄と設定をコピー」でコピーした文字を貼り付けてください');
+$('btnImport').addEventListener('click', async () => {
+  const text = await ask('「銘柄と設定をコピー」でコピーした文字を貼り付けてください', { input: '', rows: 4 });
   if (!text) return;
   try {
     const d = JSON.parse(text);
     if (d.app !== 'trade-monitor' || !Array.isArray(d.list)) throw new Error();
-    if (!confirm(`${d.list.length}銘柄と設定を読み込みます。今の銘柄リストは置き換わります。よろしいですか？`)) return;
+    if (!(await ask(`${d.list.length}銘柄と設定を読み込みます。今の銘柄リストは置き換わります。よろしいですか？`))) return;
     list = d.list.filter((x) => x && typeof x.code === 'string').slice(0, MAX_SYMBOLS);
     Object.assign(settings, d.settings || {});
     save(KEY.settings, settings);
@@ -832,7 +860,7 @@ $('btnImport').addEventListener('click', () => {
     fillSettings();
     renderList();
     toast('読み込みました。「設定を保存して戻る」で反映されます');
-  } catch { alert('読み込めませんでした。コピーした文字をそのまま貼り付けてください。'); }
+  } catch { ask('読み込めませんでした。コピーした文字をそのまま貼り付けてください。', { alert: true }); }
 });
 
 /* ---------------- 新しい版の自動読み込み ----------------
@@ -840,7 +868,7 @@ $('btnImport').addEventListener('click', () => {
    15分に1回、小さなファイル（version.json、GitHub 上）を確認するだけで、株価の取得先には通信しない。 */
 const APP_VERSION = document.querySelector('meta[name="app-version"]')?.content || '0';
 async function checkUpdate() {
-  if (document.hidden || st.settingsOpen || userIsTouching() || netDlg.open || dlg.open) return;
+  if (document.hidden || st.settingsOpen || userIsTouching() || netDlg.open || dlg.open || $('askDialog').open) return;
   try {
     const r = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
     if (!r.ok) return;
