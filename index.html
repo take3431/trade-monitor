@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="ja" data-theme="dark" data-font="m" data-color="jp">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TRADE MONITOR">
+<meta name="theme-color" content="#0d1117">
+<title>TRADE MONITOR</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="css/style.css">
+<script src="vendor/lightweight-charts.standalone.production.js"></script>
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-logo" viewBox="0 0 24 24"><path d="M3 20h18M5 16v2M9 12v6M13 14v4M17 9v9M4 11l5-5 4 3 7-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M7 5h3v14H7zM14 5h3v14h-3z" fill="currentColor"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z" fill="currentColor"/></symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24"><path d="M12 6l-7 6 7 6zM20 6l-7 6 7 6z" fill="currentColor"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><path d="M12 6l7 6-7 6zM4 6l7 6-7 6z" fill="currentColor"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-grip" viewBox="0 0 24 24"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</svg>
+
+<header class="topbar">
+  <div class="brand"><svg class="ico"><use href="#i-logo"/></svg><span>TRADE MONITOR</span></div>
+  <div class="status" id="status">
+    <span class="dot" id="statusDot"></span>
+    <span id="statusText">東証</span>
+    <span id="updatedAt" class="muted"></span>
+    <span id="errText" class="err" hidden></span>
+    <span id="demoBadge" class="badge" hidden>デモデータ</span>
+  </div>
+  <div class="countdown" id="countdown"></div>
+  <div class="spacer"></div>
+  <div class="controls main-only">
+    <button class="tbtn" id="btnPause" title="一時停止/再生 (Space)">
+      <span>一時停止/再生</span><svg class="ico"><use id="pauseUse" href="#i-pause"/></svg>
+    </button>
+    <div class="tgroup">
+      <span class="tlabel">前/次</span>
+      <button class="tbtn icon" id="btnPrev" title="前の銘柄 (←)"><svg class="ico"><use href="#i-prev"/></svg></button>
+      <button class="tbtn icon" id="btnNext" title="次の銘柄 (→)"><svg class="ico"><use href="#i-next"/></svg></button>
+    </div>
+    <button class="icon-btn" id="btnMenu" aria-label="設定を開く"><svg class="ico"><use href="#i-menu"/></svg></button>
+  </div>
+  <div class="settings-only settings-title">
+    <span>銘柄・システム設定</span>
+    <button class="icon-btn" id="btnClose" aria-label="保存して戻る"><svg class="ico"><use href="#i-close"/></svg></button>
+  </div>
+</header>
+
+<main id="monitor">
+  <div id="stageA"></div>
+  <div id="stageB"></div>
+  <div id="emptyMsg" class="empty" hidden>
+    <p>表示対象の銘柄がありません。</p>
+    <p class="muted">右上のメニュー（≡）から銘柄を登録し、「表示対象」をONにしてください。</p>
+  </div>
+</main>
+
+<div id="settings" class="settings" hidden>
+  <section class="card list-card">
+    <div class="list-head">
+      <h2>登録銘柄一覧 <span id="listCount" class="muted"></span></h2>
+      <div class="list-actions">
+        <button class="btn" id="btnRefreshList"><svg class="ico"><use href="#i-refresh"/></svg><span>株価更新</span></button>
+        <button class="btn" id="btnAdd"><svg class="ico"><use href="#i-plus"/></svg><span>新規登録</span></button>
+      </div>
+    </div>
+    <div class="table-wrap" id="tableWrap">
+      <table class="list">
+        <thead><tr>
+          <th class="c-no">通番</th><th class="c-code">コード</th><th class="c-name">銘柄名</th>
+          <th class="r">株価</th><th class="r">前日比</th><th class="r">騰落率</th>
+          <th class="c-sw">表示対象</th><th class="c-del"></th>
+        </tr></thead>
+        <tbody id="listBody"></tbody>
+      </table>
+    </div>
+    <p class="hint muted">通番の ⋮⋮ をドラッグして並び替え ／ 銘柄名をタップして表示名を変更</p>
+  </section>
+
+  <aside class="card panel">
+    <div class="panel-scroll">
+      <section>
+        <h3>自動表示切替設定 (秒数)</h3>
+        <div class="seg" id="segInterval">
+          <button data-v="30">30s</button><button data-v="60">60s</button><button data-v="90">90s</button><button data-v="custom">カスタム</button>
+        </div>
+        <label class="row">切り替え間隔 (10〜300秒)<input type="number" id="inpInterval" min="10" max="300" step="1" inputmode="numeric"></label>
+        <label class="row">市場時間外の自動巡回
+          <select id="selOffHours"><option value="continue">継続する</option><option value="stop">停止する</option></select>
+        </label>
+      </section>
+
+      <section>
+        <h3>チャート設定</h3>
+        <div class="row">左チャート足種<div class="seg sm" id="segLeftTf"></div></div>
+        <label class="row">左 初期表示期間<select id="selLeftBars"></select></label>
+        <div class="row">右チャート足種<div class="seg sm" id="segRightTf"></div></div>
+        <label class="row">右 初期表示期間<select id="selRightBars"></select></label>
+        <div class="sub">表示テクニカル</div>
+        <div class="checks">
+          <label><input type="checkbox" id="chkMa">移動平均線</label>
+          <label><input type="checkbox" id="chkBb">ボリンジャー</label>
+          <label><input type="checkbox" id="chkVol">出来高</label>
+        </div>
+      </section>
+
+      <section>
+        <h3>表示・動作設定</h3>
+        <label class="row">ダークモード<span class="switch"><input type="checkbox" id="chkDark"><i></i></span></label>
+        <div class="row">騰落カラー<div class="seg sm" id="segColor"><button data-v="jp">上昇=赤</button><button data-v="us">上昇=緑</button></div></div>
+        <div class="row">文字サイズ<div class="seg sm" id="segFont"><button data-v="l">大</button><button data-v="m">中</button><button data-v="s">小</button></div></div>
+        <label class="row">画面スリープ防止<span class="switch"><input type="checkbox" id="chkWake"><i></i></span></label>
+      </section>
+
+      <section>
+        <h3>データ取得設定</h3>
+        <div class="row">キャッシュ有効時間<div class="seg sm" id="segCache"><button data-v="1">1分</button><button data-v="2">2分</button><button data-v="3">3分</button></div></div>
+        <label class="row">事前取得 (切替の何秒前)<input type="number" id="inpPrefetch" min="5" max="60" inputmode="numeric"></label>
+        <label class="col">CORSプロキシURL<input type="url" id="inpProxy" placeholder="https://xxxx.workers.dev/?url={url}" autocomplete="off" spellcheck="false"></label>
+        <label class="row">失敗時に予備プロキシを使う<span class="switch"><input type="checkbox" id="chkFallback"><i></i></span></label>
+        <label class="row">デモデータで表示<span class="switch"><input type="checkbox" id="chkDemo"><i></i></span></label>
+        <div class="row"><span class="muted small">保存済みの株価・チャートを消去</span><button class="btn sm danger" id="btnClearCache">キャッシュ消去</button></div>
+      </section>
+      <p class="muted small attribution">Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a> Lightweight Charts™ ／ データ: Yahoo Finance（約20分遅延）</p>
+    </div>
+    <button class="btn primary block" id="btnSave">設定を保存して戻る</button>
+  </aside>
+</div>
+
+<dialog id="addDialog">
+  <form id="addForm" method="dialog">
+    <h3>銘柄の新規登録</h3>
+    <label class="col">銘柄コード または 銘柄名
+      <div class="inline">
+        <input id="addQuery" placeholder="例: 7203 / トヨタ" autocomplete="off">
+        <button type="button" class="btn" id="btnSearch">検索</button>
+      </div>
+    </label>
+    <ul id="addResults" class="results"></ul>
+    <div class="grid2">
+      <label class="col">銘柄コード<input id="addCode" maxlength="4" autocomplete="off" placeholder="7203"></label>
+      <label class="col">市場
+        <select id="addMarket"><option>東証プライム</option><option>東証スタンダード</option><option>東証グロース</option><option>東証</option></select>
+      </label>
+    </div>
+    <label class="col">表示名<input id="addName" autocomplete="off" placeholder="トヨタ自動車"></label>
+    <p id="addMsg" class="msg"></p>
+    <div class="actions">
+      <button type="button" class="btn" id="btnAddCancel">キャンセル</button>
+      <button type="submit" class="btn primary" id="btnAddOk">登録</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+</body>
+</html>
