@@ -1,7 +1,8 @@
-import * as M from './market.js?v=20261125121301';
-import * as D from './data.js?v=20261125121301';
-import { Stage, themeColors } from './chart.js?v=20261125121301';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125121301';
+import * as M from './market.js?v=20261125124411';
+import * as D from './data.js?v=20261125124411';
+import { Stage, themeColors } from './chart.js?v=20261125124411';
+import { parsePrice, fmtNum, crossed, unlockAudio, playChime, showAlertCard, initAlertCards } from './alerts.js?v=20261125124411';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125124411';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -13,6 +14,7 @@ const DEFAULTS = {
   leftTf: '1d', rightTf: '1mo', leftBars: 126, rightBars: 120,
   ind: { ma: true, bb: false, vol: true },
   theme: 'dark', colorMode: 'jp', font: 'm', wakeLock: true,
+  alertPopup: true, alertSound: true,
 };
 // 画面に出さない固定値
 const CACHE_MIN = 2;      // 場中のキャッシュ有効時間（分）
@@ -53,6 +55,8 @@ function cleanSettings(raw) {
   s.colorMode = raw.colorMode === 'us' ? 'us' : 'jp';
   s.font = ['s', 'm', 'l'].includes(raw.font) ? raw.font : 'm';
   s.wakeLock = raw.wakeLock !== undefined ? !!raw.wakeLock : DEFAULTS.wakeLock;
+  s.alertPopup = raw.alertPopup !== undefined ? !!raw.alertPopup : DEFAULTS.alertPopup;
+  s.alertSound = raw.alertSound !== undefined ? !!raw.alertSound : DEFAULTS.alertSound;
   return s;
 }
 function cleanList(raw) {
@@ -64,7 +68,12 @@ function cleanList(raw) {
     const code = x.code.trim().toUpperCase().slice(0, 10);
     if (!(JP_RE.test(code) || US_RE.test(code)) || seen.has(code)) continue;
     seen.add(code);
-    out.push({ code, name: typeof x.name === 'string' ? x.name.slice(0, 120) : '', enabled: x.enabled !== false });
+    const item = { code, name: typeof x.name === 'string' ? x.name.slice(0, 120) : '', enabled: x.enabled !== false };
+    // アラート：ON/OFF と設定株価（設定株価が無い銘柄は項目ごと持たない）
+    const ap = Number(x.alertPrice);
+    if (Number.isFinite(ap) && ap > 0) item.alertPrice = ap;
+    if (x.alertOn && item.alertPrice) item.alertOn = true;
+    out.push(item);
     if (out.length >= MAX_SYMBOLS) break;
   }
   return out;
@@ -347,6 +356,7 @@ async function keepAwake() {
 
 /* ---------------- 設定画面 ---------------- */
 function openSettings() {
+  setAlertMode(false);
   st.settingsOpen = true;
   document.body.classList.add('in-settings');
   $('settings').hidden = false;
@@ -444,14 +454,13 @@ function formValues() {
 }
 function readSettings() { Object.assign(settings, formValues()); }
 
-// 何か変更したときだけ「設定を保存して戻る」ボタンを出す
-let snapForm = '', snapList = '';
-// 並び替えはその場で保存しているので、比較するときは並び順を無視する
-const listKey = () => JSON.stringify([...list].sort((a, b) => a.code.localeCompare(b.code)));
-function takeSnapshot() { snapForm = JSON.stringify(formValues()); snapList = listKey(); updateDirty(); }
+// 右側の設定を変更したときだけ「設定を保存して戻る」ボタンを出す
+// （銘柄の登録・削除・並び替え・表示対象・名前・アラートは、その場で保存しているので対象外）
+let snapForm = '';
+function takeSnapshot() { snapForm = JSON.stringify(formValues()); updateDirty(); }
 function updateDirty() {
   if (!st.settingsOpen) return;
-  const dirty = JSON.stringify(formValues()) !== snapForm || listKey() !== snapList;
+  const dirty = JSON.stringify(formValues()) !== snapForm;
   $('btnSave').hidden = !dirty;
 }
 ['input', 'change', 'click'].forEach((ev) => $('settings').addEventListener(ev, () => setTimeout(updateDirty, 0)));
@@ -464,10 +473,15 @@ function renderList() {
       <td class="c-no"><span class="grip" title="ドラッグで並び替え"><svg class="ico"><use href="#i-grip"/></svg></span><span class="no">${String(i + 1).padStart(3, '0')}</span></td>
       <td class="c-code num">${esc(x.code)}${isUS(x.code) ? '<span class="tag">米</span>' : ''}</td>
       <td class="c-name"><button class="link rename">${esc(x.name || '（名称未設定）')}</button></td>
+      <td class="c-price r"></td>
+      <td class="c-target"><div class="tgt-box"><input class="tgt" type="text" autocomplete="off" enterkeyhint="done" placeholder="株価を入力" aria-label="${esc(x.code)} の設定株価"><span class="tgt-dir"></span></div></td>
+      <td class="c-alert"><label class="switch"><input type="checkbox" class="alert-tg" aria-label="${esc(x.code)} のアラート"><i></i></label></td>
       <td class="c-sw"><label class="switch"><input type="checkbox" class="toggle" ${x.enabled ? 'checked' : ''}><i></i></label></td>
       <td class="c-del"><button class="icon-btn danger del" aria-label="削除"><svg class="ico"><use href="#i-trash"/></svg></button></td>
     </tr>`).join('');
   $('btnAdd').disabled = list.length >= MAX_SYMBOLS;
+  for (const x of list) updateAlertRow(x.code);
+  if (alertMode) fillPrices();
 }
 
 function renumber() {
@@ -503,6 +517,126 @@ $('listBody').addEventListener('click', (e) => {
     });
   }
 });
+
+/* ---------------- アラート ----------------
+   ・判定に使う株価は、いつもの表示・先読み・まとめて取得で届いたものだけ（アラートのための通信はしない）
+   ・前回の現在値 → 今回の現在値 の間に設定株価をまたいだら通知し、その銘柄のアラートを自動で OFF にする
+   ・設定株価は全角・半角どちらでも入力でき、表示は半角（桁区切り付き）にそろえる */
+const PRICE_KEY = DEMO ? 'tm.prices.demo.v1' : 'tm.prices.v1';
+const prices = load(PRICE_KEY, {}) || {}; // code -> 最後に届いた現在値
+let savePricesTimer = null;
+function savePrices() {
+  clearTimeout(savePricesTimer);
+  savePricesTimer = setTimeout(() => {
+    const keep = new Set(list.map((x) => x.code));
+    for (const k of Object.keys(prices)) if (!keep.has(k)) delete prices[k];
+    save(PRICE_KEY, prices);
+  }, 1000);
+}
+// 現在値が分からない銘柄は、保存済みのデータから読む（通信しない）
+async function ensurePrice(code) {
+  if (prices[code] != null) return;
+  const p = await D.peekPrice(code);
+  if (p != null && prices[code] == null) { prices[code] = p; savePrices(); updateAlertRow(code); }
+}
+let fillingPrices = false;
+async function fillPrices() {
+  if (fillingPrices) return;
+  fillingPrices = true;
+  try { for (const x of [...list]) await ensurePrice(x.code); } finally { fillingPrices = false; }
+}
+
+let alertMode = false;
+function setAlertMode(on) {
+  alertMode = on;
+  $('settings').classList.toggle('alert-mode', on);
+  $('btnAlertMode').setAttribute('aria-pressed', String(on));
+  if (!on) return;
+  $('chkAlertPopup').checked = settings.alertPopup;
+  $('chkAlertSound').checked = settings.alertSound;
+  fillPrices();
+}
+$('btnAlertMode').addEventListener('click', () => setAlertMode(!alertMode));
+$('btnAlertBack').addEventListener('click', () => setAlertMode(false));
+$('btnAlertDone').addEventListener('click', () => closeSettings());
+$('chkAlertPopup').addEventListener('change', (e) => { settings.alertPopup = e.target.checked; save(KEY.settings, settings); });
+$('chkAlertSound').addEventListener('change', (e) => { settings.alertSound = e.target.checked; save(KEY.settings, settings); if (e.target.checked) playChime(); });
+$('btnAlertTest').addEventListener('click', () => playChime());
+
+const rowOf = (code) => $('listBody').querySelector(`tr[data-code="${CSS.escape(code)}"]`);
+function updateAlertRow(code) {
+  const tr = rowOf(code);
+  const x = list.find((i) => i.code === code);
+  if (!tr || !x) return;
+  const us = isUS(code);
+  const cur = prices[code];
+  tr.querySelector('.c-price').textContent = cur != null ? fmtNum(cur, us) : '—';
+  const on = !!x.alertOn;
+  tr.querySelector('.alert-tg').checked = on;
+  const inp = tr.querySelector('.tgt');
+  inp.disabled = !on; // アラートが OFF の間は入力できない
+  if (document.activeElement !== inp) inp.value = x.alertPrice ? fmtNum(x.alertPrice, us) : '';
+  tr.querySelector('.tgt-box').classList.toggle('off', !on);
+  // ▲：今より上に設定（上抜けで通知） ／ ▼：今より下に設定（下抜けで通知）
+  const T = x.alertPrice;
+  const d = T && cur != null ? (T > cur ? 'up' : T < cur ? 'down' : '') : '';
+  const dir = tr.querySelector('.tgt-dir');
+  dir.textContent = d === 'up' ? '▲' : d === 'down' ? '▼' : '';
+  dir.className = `tgt-dir ${d}`;
+  dir.title = d === 'up' ? '上抜けで通知' : d === 'down' ? '下抜けで通知' : '';
+}
+function commitTarget(x, inp) {
+  const v = parsePrice(inp.value);
+  if (Number.isNaN(v)) {
+    toast('設定株価は数字で入力してください');
+    inp.value = x.alertPrice ? fmtNum(x.alertPrice, isUS(x.code)) : '';
+    return;
+  }
+  if (v == null) delete x.alertPrice; else x.alertPrice = v;
+  saveList();
+  inp.value = v == null ? '' : fmtNum(v, isUS(x.code));
+  updateAlertRow(x.code);
+}
+$('listBody').addEventListener('change', (e) => {
+  const tr = e.target.closest('tr');
+  const x = tr && list.find((i) => i.code === tr.dataset.code);
+  if (!x) return;
+  if (e.target.classList.contains('alert-tg')) {
+    if (e.target.checked) x.alertOn = true; else delete x.alertOn;
+    saveList();
+    updateAlertRow(x.code);
+    if (x.alertOn) {
+      ensurePrice(x.code);
+      if (!x.alertPrice) setTimeout(() => tr.querySelector('.tgt').focus(), 0);
+    }
+  } else if (e.target.classList.contains('tgt')) {
+    commitTarget(x, e.target);
+  }
+});
+$('listBody').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.classList.contains('tgt')) { e.preventDefault(); e.target.blur(); }
+});
+
+function fireAlert(x, dir, price) {
+  const target = x.alertPrice;
+  delete x.alertOn; // 1回通知したら OFF（設定株価の付近で上下しても何度も鳴らないように）
+  saveList();
+  if (settings.alertPopup) showAlertCard({ code: x.code, name: x.name, target, price, dir, at: Date.now(), us: isUS(x.code) });
+  if (settings.alertSound) playChime();
+}
+D.onPrice((code, price) => {
+  const prev = prices[code];
+  prices[code] = price;
+  savePrices();
+  const x = list.find((i) => i.code === code);
+  if (x?.alertOn && x.alertPrice) {
+    const dir = crossed(prev, price, x.alertPrice);
+    if (dir) fireAlert(x, dir, price);
+  }
+  if (st.settingsOpen) updateAlertRow(code);
+});
+initAlertCards($('alertStack'));
+for (const x of list) if (x.alertOn) ensurePrice(x.code);
 
 /* ---------------- アプリ内の確認画面 ----------------
    ブラウザ標準の確認画面（confirm / prompt / alert）は Android で全画面表示を解除してしまうため使わない。
@@ -562,7 +696,10 @@ function ask(msg, { input = null, ok = 'OK', danger = false, alert: only = false
     const ghost = document.createElement('table');
     ghost.className = 'list drag-ghost';
     const clone = tr.cloneNode(true);
-    [...clone.children].forEach((td, i) => { td.style.width = `${tr.children[i].getBoundingClientRect().width}px`; });
+    [...clone.children].forEach((td, i) => {
+      if (getComputedStyle(tr.children[i]).display === 'none') td.style.display = 'none'; // 今の画面で隠している列
+      else td.style.width = `${tr.children[i].getBoundingClientRect().width}px`;
+    });
     ghost.appendChild(document.createElement('tbody')).appendChild(clone);
     Object.assign(ghost.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px` });
     document.body.appendChild(ghost);
@@ -781,7 +918,7 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowLeft') go(-1);
   else if (e.key === ' ') { e.preventDefault(); $('btnPause').click(); }
 });
-document.addEventListener('pointerdown', keepAwake, { passive: true });
+document.addEventListener('pointerdown', () => { keepAwake(); unlockAudio(); }, { passive: true });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
   keepAwake();
@@ -830,7 +967,9 @@ setInterval(async () => {
     if (empty) { rebuildCharts(); show(st.code, { retry: true }); }
   }
   const allClosed = !marketsInList().some((m) => M.marketPhase(now, m).open);
-  if (now - BOOT_AT > 12 * 3600e3 && allClosed && !userIsTouching() && !netDlg.open && !dlg.open) location.reload();
+  // アラート音を使っている間は読み込み直さない（読み込み直すと、画面に触れるまで音が鳴らせなくなるため）
+  const soundAlerts = settings.alertSound && list.some((x) => x.alertOn);
+  if (now - BOOT_AT > 12 * 3600e3 && allClosed && !soundAlerts && !userIsTouching() && !netDlg.open && !dlg.open) location.reload();
 }, 5000);
 
 /* ---------------- 全画面表示・ホーム画面アプリ ----------------

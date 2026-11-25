@@ -9,8 +9,8 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261125121301';
-import { isUS } from './names.js?v=20261125121301';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261125124411';
+import { isUS } from './names.js?v=20261125124411';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = (code) => (isUS(code) ? code : `${code}.T`);
@@ -325,6 +325,19 @@ async function putStored(code, kind, v) {
     ok = await idb('readwrite', (s) => s.put(v, k));
   }
   if (ok != null) idb('readwrite', (s) => s.put(v.fetchedAt || Date.now(), k), 'index');
+  // 新しく取得した現在値を知らせる（アラート判定用。追加の通信はしない）
+  if (kind === 'base' && v.fetchedAt) {
+    const q = quoteOfBase(v);
+    if (q?.price != null) priceListeners.forEach((f) => { try { f(code, q.price); } catch { /* ignore */ } });
+  }
+}
+const priceListeners = new Set();
+export const onPrice = (fn) => priceListeners.add(fn);
+// 保存済みの現在値（通信しない。表示用の記憶領域も使わない）
+export async function peekPrice(code) {
+  const k = keyOf(code, 'base');
+  const v = mem.has(k) ? mem.get(k) : await idb('readonly', (s) => s.get(k));
+  return quoteOfBase(v)?.price ?? null;
 }
 export async function clearCache() {
   mem.clear();

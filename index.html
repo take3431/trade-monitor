@@ -11,15 +11,15 @@
      外部への通信に、このページの URL（参照元）を付けない。 -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://r.jina.ai https://api.allorigins.win https://api.codetabs.com; object-src 'none'; base-uri 'self'; form-action 'self'">
 <meta name="referrer" content="no-referrer">
-<meta name="app-version" content="20261125121301">
+<meta name="app-version" content="20261125124411">
 <meta name="theme-color" content="#0d1117">
 <title>TRADE MONITOR</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-180.png">
-<link rel="stylesheet" href="css/style.css?v=20261125121301">
-<script src="vendor/lightweight-charts.standalone.production.js?v=20261125121301"></script>
-<script type="module" src="js/gate.js?v=20261125121301"></script>
+<link rel="stylesheet" href="css/style.css?v=20261125124411">
+<script src="vendor/lightweight-charts.standalone.production.js?v=20261125124411"></script>
+<script type="module" src="js/gate.js?v=20261125124411"></script>
 </head>
 <body class="locked">
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -35,6 +35,8 @@
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-grip" viewBox="0 0 24 24"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
 </svg>
 
@@ -82,6 +84,7 @@
     <div class="list-head">
       <h2>登録銘柄一覧 <span id="listCount" class="muted"></span></h2>
       <div class="list-actions">
+        <button class="btn" id="btnAlertMode" aria-pressed="false"><svg class="ico"><use href="#i-bell"/></svg><span>アラート設定</span></button>
         <button class="btn" id="btnAdd"><svg class="ico"><use href="#i-plus"/></svg><span>新規登録</span></button>
       </div>
     </div>
@@ -89,15 +92,17 @@
       <table class="list">
         <thead><tr>
           <th class="c-no">順番</th><th class="c-code">コード</th><th class="c-name">銘柄名</th>
+          <th class="c-price r">現在値</th><th class="c-target">設定株価</th><th class="c-alert">アラート</th>
           <th class="c-sw">表示対象</th><th class="c-del"></th>
         </tr></thead>
         <tbody id="listBody"></tbody>
       </table>
     </div>
-    <p class="hint muted">左端の ⋮⋮ をドラッグして並び替え ／ 銘柄名をタップして表示名を変更</p>
+    <p class="hint muted list-hint">左端の ⋮⋮ をドラッグして並び替え ／ 銘柄名をタップして表示名を変更</p>
+    <p class="hint muted alert-hint">アラートをONにすると設定株価を入力できます（全角・半角どちらでも可）／ 株価が設定株価をまたいだ瞬間に1回通知し、自動でOFFに戻ります</p>
   </section>
 
-  <aside class="card panel">
+  <aside class="card panel" id="mainPanel">
     <div class="panel-scroll">
       <section>
         <h3>自動表示切替設定 (秒数)</h3>
@@ -140,6 +145,32 @@
       <p class="muted small attribution">Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a></p>
     </div>
     <button class="btn primary block" id="btnSave" hidden>設定を保存して戻る</button>
+  </aside>
+
+  <aside class="card panel alert-panel" id="alertPanel">
+    <div class="panel-scroll">
+      <section>
+        <h3>アラート通知設定</h3>
+        <div class="sub">通知方法</div>
+        <label class="row">画面内ポップアップ<span class="switch"><input type="checkbox" id="chkAlertPopup"><i></i></span></label>
+        <label class="row">アラート音<span class="switch"><input type="checkbox" id="chkAlertSound"><i></i></span></label>
+        <div class="row"><span class="muted small">音の確認</span><button class="btn sm" id="btnAlertTest" type="button">試しに鳴らす</button></div>
+      </section>
+      <section>
+        <div class="sub">判定条件</div>
+        <p class="alert-rule">現在値が設定株価を<b>上抜け（▲）</b>または<b>下抜け（▼）</b>した瞬間に通知します。通知した銘柄のアラートは自動でOFFになります。</p>
+        <ul class="muted small alert-notes">
+          <li>株価は、いつもの表示のために取得したデータで判定します（アラートのための通信はしません）。</li>
+          <li>表示対象がOFFの銘柄は株価を取得しないため、判定されません。</li>
+          <li>通知は × を押すか、横にスライドするまで消えません。</li>
+          <li>音は、ページを開いてから一度画面に触れたあとに鳴ります（ブラウザの決まり）。</li>
+        </ul>
+      </section>
+    </div>
+    <div class="alert-actions">
+      <button class="btn block" id="btnAlertBack" type="button"><svg class="ico"><use href="#i-back"/></svg><span>設定画面に戻る</span></button>
+      <button class="btn primary block" id="btnAlertDone" type="button"><svg class="ico"><use href="#i-back"/></svg><span>戻る</span></button>
+    </div>
   </aside>
 </div>
 
@@ -197,5 +228,6 @@
 </dialog>
 
 <div id="toast" class="toast" hidden></div>
+<div id="alertStack" class="alert-stack" aria-live="assertive"></div>
 </body>
 </html>
