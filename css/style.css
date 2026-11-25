@@ -322,4 +322,4 @@ body.locked > *:not(#gate):not(svg) { visibility: hidden; }
 .gate-msg { margin: 0; min-height: 1.3em; font-size: .82rem; color: var(--muted); }
 .gate-msg.err { color: var(--warn); }
 .gate-text { display: flex; align-items: center; gap: .5rem; }
-.gate-hint { font-size: 1.6rem; line-height: 1; }
+.gate-hint { display: inline-flex; line-height: 0; }
