@@ -1,7 +1,7 @@
 // 表示レイヤー（ステージ）とチャート描画
 // ステージを2枚重ねておき、非表示側に描画してから切り替えることでチラつきを防ぐ。
-import { TF } from './data.js?v=20261125103323';
-import { fmtStamp } from './market.js?v=20261125103323';
+import { TF } from './data.js?v=20261125104050';
+import { fmtStamp } from './market.js?v=20261125104050';
 
 const LC = window.LightweightCharts;
 const JST = 9 * 3600;
@@ -16,6 +16,7 @@ export const fmtSigned = (v, digits) => {
   const s = digits == null ? fmtPrice(Math.abs(v)) : Math.abs(v).toFixed(digits);
   return (v > 0 ? '+' : v < 0 ? '−' : '±') + s;
 };
+const escHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 export const dirClass = (v) => (v > 0 ? 'up' : v < 0 ? 'down' : 'flat');
 
 function cssVar(name) {
@@ -190,7 +191,8 @@ class Pane {
     let bar = null;
     if (p && p.time != null && p.seriesData) bar = p.seriesData.get(this.s.candle);
     if (!bar) bar = this.bars[this.bars.length - 1];
-    let html = `<span class="lg-t">${this.label}</span>`;
+    // 表示名は利用者が入力・貼り付けできるので、HTML として解釈させない
+    let html = `<span class="lg-t">${escHtml(this.label)}</span>`;
     if (bar) {
       html += `<span class="lg-o">始 ${fmtPrice(bar.open)} 高 ${fmtPrice(bar.high)} 安 ${fmtPrice(bar.low)} 終 <b class="${dirClass(bar.close - bar.open)}">${fmtPrice(bar.close)}</b></span>`;
       if (this.ma) {

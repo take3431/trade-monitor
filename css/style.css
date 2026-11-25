@@ -282,7 +282,7 @@ tr.drag-placeholder td > * { visibility: hidden; }
 .net-head { display: flex; align-items: center; justify-content: space-between; }
 .net-head h3 { margin: 0; }
 .net-dialog h4 { margin: .2rem 0 0; font-size: .9rem; }
-.net-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: .5rem; }
+.net-summary { display: grid; grid-template-columns: repeat(5, 1fr); gap: .5rem; }
 .net-summary > div { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: .45rem .6rem; display: flex; flex-direction: column; }
 .net-summary .k { font-size: .72rem; color: var(--muted); }
 .net-summary b { font-size: 1.1rem; font-variant-numeric: tabular-nums; }

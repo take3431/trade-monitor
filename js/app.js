@@ -1,7 +1,7 @@
-import * as M from './market.js?v=20261125103323';
-import * as D from './data.js?v=20261125103323';
-import { Stage, themeColors } from './chart.js?v=20261125103323';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125103323';
+import * as M from './market.js?v=20261125104050';
+import * as D from './data.js?v=20261125104050';
+import { Stage, themeColors } from './chart.js?v=20261125104050';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125104050';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -33,12 +33,49 @@ const frames = (n = 2) => Promise.race([
 ]);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+/* ---------------- 保存データの検査 ----------------
+   保存データが壊れていたり、貼り付けで読み込んだデータに想定外の値が入っていても、
+   決められた項目・形式だけを取り出して使う（不具合や不正な値の混入を防ぐ）。 */
+const TF_KEYS = ['5m', '1d', '1wk', '1mo'];
+function cleanSettings(raw) {
+  const s = { ...DEFAULTS, ind: { ...DEFAULTS.ind } };
+  if (!raw || typeof raw !== 'object') return s;
+  const int = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Math.round(Number(v)))) : d);
+  s.interval = int(raw.interval, 10, 300, DEFAULTS.interval);
+  s.offHours = raw.offHours === 'stop' ? 'stop' : 'continue';
+  s.leftTf = TF_KEYS.includes(raw.leftTf) ? raw.leftTf : DEFAULTS.leftTf;
+  s.rightTf = TF_KEYS.includes(raw.rightTf) ? raw.rightTf : DEFAULTS.rightTf;
+  s.leftBars = int(raw.leftBars, 0, 5000, DEFAULTS.leftBars);
+  s.rightBars = int(raw.rightBars, 0, 5000, DEFAULTS.rightBars);
+  const ind = raw.ind && typeof raw.ind === 'object' ? raw.ind : {};
+  s.ind = { ma: ind.ma !== undefined ? !!ind.ma : DEFAULTS.ind.ma, bb: !!ind.bb, vol: ind.vol !== undefined ? !!ind.vol : DEFAULTS.ind.vol };
+  s.theme = raw.theme === 'light' ? 'light' : 'dark';
+  s.colorMode = raw.colorMode === 'us' ? 'us' : 'jp';
+  s.font = ['s', 'm', 'l'].includes(raw.font) ? raw.font : 'm';
+  s.wakeLock = raw.wakeLock !== undefined ? !!raw.wakeLock : DEFAULTS.wakeLock;
+  return s;
+}
+function cleanList(raw) {
+  if (!Array.isArray(raw)) return null;
+  const seen = new Set();
+  const out = [];
+  for (const x of raw) {
+    if (!x || typeof x !== 'object' || typeof x.code !== 'string') continue;
+    const code = x.code.trim().toUpperCase().slice(0, 10);
+    if (!(JP_RE.test(code) || US_RE.test(code)) || seen.has(code)) continue;
+    seen.add(code);
+    out.push({ code, name: typeof x.name === 'string' ? x.name.slice(0, 120) : '', enabled: x.enabled !== false });
+    if (out.length >= MAX_SYMBOLS) break;
+  }
+  return out;
+}
+
 /* ---------------- 状態 ---------------- */
-const storedSettings = load(KEY.settings, {});
-const settings = { ...DEFAULTS, ...storedSettings, ind: { ...DEFAULTS.ind, ...(storedSettings.ind || {}) } };
-// 旧版の設定項目は使わない
-for (const k of ['proxy', 'fallback', 'demo', 'cacheMin', 'prefetchSec']) delete settings[k];
-let list = load(KEY.list, null) || DEFAULT_LIST;
+const settings = cleanSettings(load(KEY.settings, {}));
+let list = cleanList(load(KEY.list, null)) || DEFAULT_LIST;
+if (JSON.stringify(list) !== JSON.stringify(load(KEY.list, null))) save(KEY.list, list); // 検査済みの形で保存し直す
+// 使わなくなった旧版の保存項目を消す
+['tm.quotes.v1', 'tm.hint.home.v1', 'tm.hint.home.v2'].forEach((k) => { try { localStorage.removeItem(k); } catch { /* ignore */ } });
 const saved = load(KEY.state, {});
 const st = {
   code: saved.code || null, paused: !!saved.paused, remaining: settings.interval,
@@ -712,6 +749,7 @@ function renderNet() {
     <div><span class="k">直近1分</span><b>${ns.lastMin}</b><span class="u">/ ${ns.perMin}回</span></div>
     <div><span class="k">今日</span><b>${D.budgetStatus().used}</b><span class="u">/ ${D.budgetStatus().cap}回（上限）</span></div>
     <div><span class="k">最終通信</span><b>${ns.lastAt ? M.fmtStamp(ns.lastAt, now) : '—'}</b></div>
+    <div><span class="k">保存データ</span><b>${storageText}</b></div>
     <div><span class="k">状態</span><b>${ns.active ? '通信中' : ns.pausedUntil ? '一時停止中' : '待機中'}</b>${ns.queued ? `<span class="u">待ち${ns.queued}件</span>` : ''}</div>`;
   // これからの予定
   const lines = [];
@@ -742,7 +780,12 @@ function renderNet() {
       <td>${x.ok ? `成功 <span class="muted">${(x.ms / 1000).toFixed(1)}秒</span>` : `<span class="err">失敗</span>`}${x.note ? `<div class="muted small">${esc(x.note)}</div>` : ''}</td>
     </tr>`).join('') : '<tr><td colspan="4" class="muted">この画面を開いてからの通信はまだありません（保存済みのデータで表示中）</td></tr>';
 }
-function openNet() { netDlg.showModal(); renderNet(); }
+let storageText = '—';
+async function refreshStorageText() {
+  const i = await D.storageInfo().catch(() => null);
+  if (i) storageText = `${(i.usage / 1048576).toFixed(1)}MB・${i.entries}件`;
+}
+function openNet() { refreshStorageText().then(renderNet); netDlg.showModal(); renderNet(); }
 $('status').addEventListener('click', openNet);
 $('btnNetClose').addEventListener('click', () => netDlg.close());
 netDlg.addEventListener('click', (e) => { if (e.target === netDlg) netDlg.close(); });
@@ -876,8 +919,8 @@ $('btnImport').addEventListener('click', async () => {
     const d = JSON.parse(text);
     if (d.app !== 'trade-monitor' || !Array.isArray(d.list)) throw new Error();
     if (!(await ask(`${d.list.length}銘柄と設定を読み込みます。今の銘柄リストは置き換わります。よろしいですか？`))) return;
-    list = d.list.filter((x) => x && typeof x.code === 'string').slice(0, MAX_SYMBOLS);
-    Object.assign(settings, d.settings || {});
+    list = cleanList(d.list) || [];
+    Object.assign(settings, cleanSettings(d.settings));
     save(KEY.settings, settings);
     saveList();
     fillSettings();
@@ -901,3 +944,15 @@ async function checkUpdate() {
 }
 setInterval(checkUpdate, 15 * 60e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });
+
+/* ---------------- 保存領域の掃除 ---------------- */
+D.setRegistered(() => list.map((x) => x.code));
+const MAINT_KEY = 'tm.maint.v1';
+async function runMaintenance() {
+  try {
+    const r = await D.maintain();
+    save(MAINT_KEY, { at: Date.now(), ...r });
+  } catch { /* 次回に再試行 */ }
+}
+setTimeout(() => { if (Date.now() - (load(MAINT_KEY, {}).at || 0) > 20 * 3600e3) runMaintenance(); }, 5000);
+setInterval(() => { if (Date.now() - (load(MAINT_KEY, {}).at || 0) > 20 * 3600e3) runMaintenance(); }, 3600e3);

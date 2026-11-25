@@ -8,8 +8,8 @@
 //     以後は直近1か月分の小さなデータだけを取りに行き、手元のデータに継ぎ足す。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261125103323';
-import { isUS } from './names.js?v=20261125103323';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261125104050';
+import { isUS } from './names.js?v=20261125104050';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = (code) => (isUS(code) ? code : `${code}.T`);
@@ -266,8 +266,13 @@ function resetDb() { const old = dbp; dbp = null; old?.then((d) => { try { d?.cl
 function db() {
   if (!dbp) {
     dbp = withTimeout(new Promise((res, rej) => {
-      const r = indexedDB.open('trade-monitor', 1);
-      r.onupgradeneeded = () => r.result.createObjectStore('series');
+      const r = indexedDB.open('trade-monitor', 2);
+      r.onupgradeneeded = () => {
+        const d = r.result;
+        if (!d.objectStoreNames.contains('series')) d.createObjectStore('series');
+        // 目次：key -> 最終更新時刻（掃除のときに大きなデータを読まずに済むように）
+        if (!d.objectStoreNames.contains('index')) d.createObjectStore('index');
+      };
       r.onsuccess = () => {
         const d = r.result;
         d.onclose = resetDb;               // 接続が切れたら次回作り直す
@@ -279,22 +284,30 @@ function db() {
   }
   return dbp;
 }
-async function idb(mode, fn) {
+let lastIdbError = '';
+async function idb(mode, fn, store = 'series') {
   const d = await db();
   if (!d) { resetDb(); return null; }
   const op = new Promise((res) => {
     try {
-      const q = fn(d.transaction('series', mode).objectStore('series'));
+      const q = fn(d.transaction(store, mode).objectStore(store));
       q.onsuccess = () => res(q.result ?? null);
-      q.onerror = () => res(null);
-    } catch { resetDb(); res(null); }
+      q.onerror = (e) => { lastIdbError = q.error?.name || ''; e.preventDefault?.(); res(null); };
+    } catch (e) { lastIdbError = e?.name || ''; if (e?.name !== 'QuotaExceededError') resetDb(); res(null); }
   });
   // 応答が無いときは諦める（保存済みデータはメモリにもあるので表示は続けられる）
   const v = await withTimeout(op, 3000, undefined);
   if (v === undefined) { resetDb(); return null; }
   return v;
 }
-const mem = new Map();
+// 使った順に並べ、上限を超えたら古いものから捨てる Map（保存先には残っているので、必要になれば読み直す）
+class LRU extends Map {
+  constructor(max) { super(); this.max = max; }
+  get(k) { if (!super.has(k)) return undefined; const v = super.get(k); super.delete(k); super.set(k, v); return v; }
+  set(k, v) { super.delete(k); super.set(k, v); while (this.size > this.max) super.delete(this.keys().next().value); return this; }
+}
+const MEM_MAX = 60;
+const mem = new LRU(MEM_MAX);
 const keyOf = (code, kind) => `${cfg.demo ? 'demo|' : ''}${code}|${kind}`;
 async function getStored(code, kind) {
   const k = keyOf(code, kind);
@@ -306,13 +319,71 @@ async function getStored(code, kind) {
 async function putStored(code, kind, v) {
   const k = keyOf(code, kind);
   mem.set(k, v);
-  if (!cfg.demo) await idb('readwrite', (s) => s.put(v, k));
+  if (cfg.demo) return;
+  let ok = await idb('readwrite', (s) => s.put(v, k));
+  if (ok == null && lastIdbError === 'QuotaExceededError') {
+    // 保存領域がいっぱい：不要なデータを掃除してからもう一度だけ試す（だめでもメモリ上のデータで表示は続く）
+    await maintain({ aggressive: true });
+    ok = await idb('readwrite', (s) => s.put(v, k));
+  }
+  if (ok != null) idb('readwrite', (s) => s.put(v.fetchedAt || Date.now(), k), 'index');
 }
 export async function clearCache() {
   mem.clear();
   derived.clear();
   await idb('readwrite', (s) => s.clear());
+  await idb('readwrite', (s) => s.clear(), 'index');
 }
+
+/* ======================= 保存領域の掃除 =======================
+   ・登録から外した銘柄のデータ：30日使わなければ削除（すぐ登録し直したときは差分だけで済むよう少し残す）
+   ・5分足：3日以上更新していなければ削除（古い5分足は使わないため）
+   ・旧版の形式のデータ・動作確認用のデータ：削除
+   ・保存領域がいっぱいのとき：登録から外した銘柄をすべて削除し、それでも多ければ古いものから削除
+   起動時と1日1回実行する。 */
+let registered = () => [];
+export function setRegistered(fn) { registered = fn; }
+const KEEP_REMOVED_MS = 30 * 86400e3;
+const KEEP_5M_MS = 3 * 86400e3;
+const MAX_ENTRIES = 1300;
+export async function maintain({ aggressive = false } = {}) {
+  const keys = (await idb('readonly', (s) => s.getAllKeys())) || [];
+  if (!keys.length) return { removed: 0, total: 0 };
+  const stamps = new Map();
+  const ikeys = (await idb('readonly', (s) => s.getAllKeys(), 'index')) || [];
+  const ivals = (await idb('readonly', (s) => s.getAll(), 'index')) || [];
+  ikeys.forEach((k, i) => stamps.set(k, ivals[i]));
+  const reg = new Set(registered());
+  const now = Date.now();
+  const drop = [];
+  const keepers = [];
+  for (const k of keys) {
+    const [code, kind, extra] = String(k).split('|');
+    const at = stamps.get(k) || 0;
+    if (extra !== undefined || code === 'demo' || (kind !== 'base' && kind !== '5m')) { drop.push(k); continue; } // 旧形式・デモ
+    if (kind === '5m' && now - at > KEEP_5M_MS) { drop.push(k); continue; }
+    if (!reg.has(code) && (aggressive || now - at > KEEP_REMOVED_MS)) { drop.push(k); continue; }
+    keepers.push([k, at]);
+  }
+  const limit = aggressive ? Math.floor(MAX_ENTRIES * 0.8) : MAX_ENTRIES;
+  if (keepers.length > limit) {
+    keepers.sort((a, b) => a[1] - b[1]);
+    drop.push(...keepers.slice(0, keepers.length - limit).map(([k]) => k));
+  }
+  for (const k of drop) {
+    await idb('readwrite', (s) => s.delete(k));
+    await idb('readwrite', (s) => s.delete(k), 'index');
+    mem.delete(k);
+  }
+  return { removed: drop.length, total: keys.length - drop.length };
+}
+export async function storageInfo() {
+  const est = await navigator.storage?.estimate?.().catch(() => null);
+  const keys = (await idb('readonly', (s) => s.count())) || 0;
+  return { usage: est?.usage || 0, quota: est?.quota || 0, entries: keys };
+}
+// 保存データをブラウザに自動で消されにくくする（対応ブラウザのみ）
+navigator.storage?.persist?.().catch(() => {});
 
 /* ======================= Yahoo 応答の整形 ======================= */
 function parseChart(json) {
@@ -386,7 +457,7 @@ function packBase(daily, prev, full) {
   return { bars: daily.slice(-KEEP_DAILY), wk, mo };
 }
 
-const derived = new Map();
+const derived = new LRU(MEM_MAX * 2);
 function deriveEntry(code, base, tf) {
   if (!base) return null;
   if (tf === '1d') return base;
@@ -512,7 +583,7 @@ export async function cachedSet(code, tfs) {
    過去の足が抜けている銘柄（久しぶりに表示する等）は、1銘柄ずつ通常の方法で不足分だけ取得する。 */
 const BATCH_MAX = 20;
 const batchWaiters = new Map(); // code -> 進行中のまとめて取得
-const openCache = new Map();    // `${code}|${日付}` -> 近似の始値
+const openCache = new LRU(400); // `${code}|${日付}` -> 近似の始値
 
 function sparkResults(json) {
   const out = new Map();
@@ -700,7 +771,7 @@ function quoteOfBase(base) {
   return { price, chg: price - prev, pct: prev ? ((price - prev) / prev) * 100 : null };
 }
 
-const searchCache = new Map(); // 検索語 -> { at, json }
+const searchCache = new LRU(50); // 検索語 -> { at, json }
 export async function searchRemote(q) {
   if (cfg.demo) return [];
   const key = q.trim().toLowerCase();
