@@ -164,6 +164,7 @@ class Pane {
     }
 
     const sameView = keepRange && this.hadBars && this.tf === tf && this.code === label;
+    if (!sameView) this.resetView();
     if (!sameView && bars.length) {
       const n = bars.length;
       if (visibleBars > 0 && n > visibleBars) this.chart.timeScale().setVisibleLogicalRange({ from: n - visibleBars, to: n + 2 });
@@ -173,6 +174,15 @@ class Pane {
     this.code = label;
     this.hadBars = bars.length > 0;
     this.updateLegend(null);
+  }
+
+  // 拡大・縮小・スクロールした状態を初期状態に戻す（価格軸の自動調整も元に戻す）
+  resetView() {
+    if (!this.chart) return;
+    this.chart.priceScale('right').applyOptions({ autoScale: true });
+    if (this.s.vol) this.chart.priceScale('vol').applyOptions({ autoScale: true });
+    this.chart.timeScale().applyOptions({ rightOffset: 3 });
+    this.chart.clearCrosshairPosition?.();
   }
 
   updateLegend(p) {

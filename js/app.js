@@ -27,7 +27,10 @@ const DEFAULT_LIST = [
 const $ = (id) => document.getElementById(id);
 const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
 const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } };
-const frames = (n = 2) => new Promise((r) => { const f = () => (--n <= 0 ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); });
+const frames = (n = 2) => Promise.race([
+  new Promise((r) => { const f = () => (--n <= 0 ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); }),
+  new Promise((r) => setTimeout(r, 250)),
+]);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /* ---------------- 状態 ---------------- */
@@ -88,6 +91,7 @@ function upcoming(n) {
   }
   return out;
 }
+const userIsTouching = () => Date.now() < st.touchUntil;
 function enabledCount() { return list.filter((x) => x.enabled).length; }
 const marketOf = (code) => (isUS(code) ? 'US' : 'JP');
 function marketsInList() { return [...new Set(list.filter((x) => x.enabled).map((x) => marketOf(x.code)))]; }
@@ -128,7 +132,7 @@ async function show(code, { nav = false, force = false, retry = false } = {}) {
     prio: D.PRIO.show,
     // 片方のチャートが届いた時点で先に表示する
     onEntry: (partial) => {
-      if (seq === st.seq && stages[front].code === code) render(stages[front], item, partial, true, true);
+      if (seq === st.seq && stages[front].code === code) render(stages[front], item, partial, userIsTouching(), true);
     },
   });
   setLoading(false);
@@ -136,7 +140,7 @@ async function show(code, { nav = false, force = false, retry = false } = {}) {
   st.lastError = res.error;
   if (res.fetched || !hasCache || isSame) {
     const onFront = stages[front].code === code;
-    if (onFront) render(stages[front], item, res.entries, true);
+    if (onFront) render(stages[front], item, res.entries, userIsTouching());
     else await present(item, res.entries, seq, false);
   }
   updateStatus();
@@ -741,3 +745,27 @@ setInterval(tick, 1000);
 keepAwake();
 // 画面の向き・大きさが変わったら銘柄名の文字サイズを調整し直す
 window.addEventListener('resize', () => stages.forEach((s) => s.fitTitle()));
+
+/* ---------------- 長時間運用のための見守り ----------------
+   ・表示中のはずの銘柄が画面に出ていない状態が続いたら、描き直す
+   ・チャートが空のまま（データはあるのに）なら、チャートを作り直す
+   ・起動から12時間以上たち、市場が閉まっていて操作もしていないときは、ページを読み込み直してメモリを整理する */
+const BOOT_AT = Date.now();
+let stuckSince = 0;
+setInterval(async () => {
+  if (document.hidden || st.settingsOpen || !st.code) return;
+  const now = Date.now();
+  const cur = stages[front];
+  const ok = cur.code === st.code && cur.root.classList.contains('active');
+  if (!ok) {
+    stuckSince = stuckSince || now;
+    if (now - stuckSince > 15e3) { stuckSince = 0; cur.code = null; show(st.code, { retry: true }); }
+  } else {
+    stuckSince = 0;
+    // データがあるのにチャートが描けていない（キャンバスが失われた等）場合は作り直す
+    const empty = cur.panes.some((p) => !p.box.querySelector('canvas'));
+    if (empty) { rebuildCharts(); show(st.code, { retry: true }); }
+  }
+  const allClosed = !marketsInList().some((m) => M.marketPhase(now, m).open);
+  if (now - BOOT_AT > 12 * 3600e3 && allClosed && !userIsTouching() && !netDlg.open && !dlg.open) location.reload();
+}, 5000);

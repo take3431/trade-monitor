@@ -217,34 +217,48 @@ function pump() {
   active++;
   lastStart = now;
   starts.push(now);
-  job.fn().then(job.resolve, job.reject).finally(() => { active--; pump(); });
+  let released = false;
+  const release = () => { if (released) return; released = true; active--; pump(); };
+  const guard = setTimeout(() => { job.reject(new Error('処理が長すぎるため中断')); release(); }, 60e3);
+  Promise.resolve().then(job.fn).then(job.resolve, job.reject).finally(() => { clearTimeout(guard); release(); });
   pump();
 }
 export function isIdle() { return active === 0 && queue.length === 0; }
 
 /* ======================= 保存（メモリ + IndexedDB） ======================= */
 let dbp = null;
+const withTimeout = (p, ms, fallback) => Promise.race([p, new Promise((r) => setTimeout(() => r(fallback), ms))]);
+function resetDb() { const old = dbp; dbp = null; old?.then((d) => { try { d?.close(); } catch { /* ignore */ } }); }
 function db() {
   if (!dbp) {
-    dbp = new Promise((res, rej) => {
+    dbp = withTimeout(new Promise((res, rej) => {
       const r = indexedDB.open('trade-monitor', 1);
       r.onupgradeneeded = () => r.result.createObjectStore('series');
-      r.onsuccess = () => res(r.result);
+      r.onsuccess = () => {
+        const d = r.result;
+        d.onclose = resetDb;               // 接続が切れたら次回作り直す
+        d.onversionchange = () => { d.close(); resetDb(); };
+        res(d);
+      };
       r.onerror = () => rej(r.error);
-    }).catch(() => null);
+    }).catch(() => null), 4000, null);
   }
   return dbp;
 }
 async function idb(mode, fn) {
   const d = await db();
-  if (!d) return null;
-  return new Promise((res) => {
+  if (!d) { resetDb(); return null; }
+  const op = new Promise((res) => {
     try {
       const q = fn(d.transaction('series', mode).objectStore('series'));
       q.onsuccess = () => res(q.result ?? null);
       q.onerror = () => res(null);
-    } catch { res(null); }
+    } catch { resetDb(); res(null); }
   });
+  // 応答が無いときは諦める（保存済みデータはメモリにもあるので表示は続けられる）
+  const v = await withTimeout(op, 3000, undefined);
+  if (v === undefined) { resetDb(); return null; }
+  return v;
 }
 const mem = new Map();
 const keyOf = (code, kind) => `${cfg.demo ? 'demo|' : ''}${code}|${kind}`;
