@@ -792,38 +792,26 @@ if (!standalone && fsSupported) {
     setTimeout(() => stages.forEach((s) => s.fitTitle()), 300);
   }));
 }
-const HINT_KEY = 'tm.hint.home.v2';
 const isTouchDevice = navigator.maxTouchPoints > 0;
-const isAndroid = /Android/i.test(navigator.userAgent);
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && isTouchDevice);
-$('hintText').innerHTML = isAndroid
-  ? '上のバーを消して画面を広く使うには：Chrome 右上の <b>︙</b> →「<b>アプリをインストール</b>」（または「ホーム画面に追加」）→ ホーム画面のアイコンから起動してください。今すぐ広くするには右上の <b>⛶</b> ボタン。'
-  : '上のバーを消して画面を広く使うには：共有ボタン <b>⬆︎</b> →「<b>ホーム画面に追加</b>」→ ホーム画面のアイコンから起動してください。';
-if (!standalone && isTouchDevice && !load(HINT_KEY, false)) $('homeHint').hidden = false;
-// iPad/iPhone はホーム画面アプリと Safari で保存場所が別なので、引き継ぎ機能を出す（Android は共通なので不要）
+// iPad/iPhone でホーム画面に追加した場合だけ保存場所が分かれるので、引き継ぎ機能を出す
 if (isIOS) $('transferSection').hidden = false;
 
-// Android の Chrome：ボタン1つでアプリとしてインストールできるようにする
-let installEvent = null;
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault();
-  installEvent = e;
-  $('btnInstall').hidden = false;
-  if (!standalone && !load(HINT_KEY, false)) $('homeHint').hidden = false;
-});
-$('btnInstall').addEventListener('click', async () => {
-  if (!installEvent) return;
-  installEvent.prompt();
-  const r = await installEvent.userChoice.catch(() => null);
-  installEvent = null;
-  $('btnInstall').hidden = true;
-  if (r?.outcome === 'accepted') { $('homeHint').hidden = true; save(HINT_KEY, true); toast('インストールしました。ホーム画面のアイコンから起動してください'); }
-});
-window.addEventListener('appinstalled', () => { $('homeHint').hidden = true; save(HINT_KEY, true); });
+// 以前の版で登録したサービスワーカーがあれば解除する（今は使わない）
+navigator.serviceWorker?.getRegistrations?.().then((rs) => rs.forEach((r) => r.unregister())).catch(() => {});
 
-// インストール可能にするための最小限のサービスワーカー（キャッシュはしない＝常に最新版を表示）
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
-$('btnHintClose').addEventListener('click', () => { $('homeHint').hidden = true; save(HINT_KEY, true); });
+// 全画面で使っていた場合は、次に開いたとき最初に画面に触れた時点で全画面に戻す
+// （ブラウザの決まりで、画面に触れる前に自動で全画面にはできない）
+const FS_KEY = 'tm.fullscreen.v1';
+if (!standalone && fsSupported) {
+  ['fullscreenchange', 'webkitfullscreenchange'].forEach((ev) => document.addEventListener(ev, () => save(FS_KEY, !!fsElement())));
+  if (load(FS_KEY, false)) {
+    const resume = () => {
+      if (!fsElement()) (root.requestFullscreen || root.webkitRequestFullscreen).call(root)?.catch?.(() => {});
+    };
+    document.addEventListener('pointerup', resume, { once: true });
+  }
+}
 
 // 銘柄リストと設定の引き継ぎ（クリップボード経由）
 $('btnExport').addEventListener('click', async () => {
