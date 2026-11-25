@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261125155918';
-import * as D from './data.js?v=20261125155918';
-import { Stage, themeColors } from './chart.js?v=20261125155918';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125155918';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125155918';
+import * as M from './market.js?v=20261125161626';
+import * as D from './data.js?v=20261125161626';
+import { Stage, themeColors } from './chart.js?v=20261125161626';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125161626';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125161626';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -147,10 +147,16 @@ function dataPlan(n = enabledCount(), interval = settings.interval) {
   while (fixed(mode) + liveKB(ttl) > DATA_LIMIT_KB && ttl < LIVE_MIN) ttl = Math.ceil(ttl * 1.25);
   return { ttlMin: ttl, skip, openMode: mode, fullDays, estKB: Math.round(fixed(mode) + liveKB(ttl)) };
 }
-const approxMode = () => dataPlan().openMode !== 'exact';
+let planCache = null;
+function currentPlan() {
+  const key = `${enabledCount()}|${settings.interval}`;
+  if (!planCache || planCache.key !== key) planCache = { key, plan: dataPlan() };
+  return planCache.plan;
+}
+const approxMode = () => currentPlan().openMode !== 'exact';
 const OPEN_LABEL = { exact: '正確（1銘柄ずつ）', '1m': '最初の1分の値', '5m': '最初の5分の値', '15m': '最初の15分の値', prev: '前日の終値で代用' };
 function applyData() {
-  const plan = dataPlan();
+  const plan = currentPlan();
   renderPlan(plan);
   D.configure({
     demo: DEMO, ttlMs: plan.ttlMin * 60e3,
@@ -234,7 +240,10 @@ async function show(code, { nav = false, force = false, retry = false, auto = fa
   if (seq !== st.seq) return;
   const hasCache = tfs.some((tf) => cached[tf]);
   // 自動切替で、まだデータが無く今日の取り込み枠も使い切った銘柄は飛ばす（「データ未取得」の画面を出さない）
-  if (auto && !hasCache && !D.initAvailable() && (st.skips = (st.skips || 0) + 1) < Math.min(enabledCount(), 50)) { go(1, false, true); return; }
+  // 自動切替で、まだデータの無い銘柄は飛ばす（10年分の取り込みは裏で15秒に1件ずつ行う）。
+  // 表示のたびに取り込むと、切り替えが速いとき（5秒など）に通信が集中するため。
+  // 全銘柄にデータが無いとき（初めて開いたとき）だけは表示し、裏と同じゆっくりした順番で取り込む
+  if (auto && !hasCache && (st.skips = (st.skips || 0) + 1) < Math.min(enabledCount(), 50)) { go(1, false, true); return; }
   st.skips = 0;
   if (!isSame) await present(item, cached, seq, !hasCache); // 未取得なら銘柄名と「読込中」を先に表示
 
@@ -243,7 +252,7 @@ async function show(code, { nav = false, force = false, retry = false, auto = fa
   setLoading(true);
   const res = await D.loadSet(code, tfs, {
     force,
-    prio: D.PRIO.show,
+    prio: auto && !hasCache ? D.PRIO.warm : D.PRIO.show,
     // 片方のチャートが届いた時点で先に表示する
     onEntry: (partial) => {
       if (seq === st.seq && stages[front].code === code) render(stages[front], item, partial, userIsTouching(), true);
@@ -296,7 +305,10 @@ async function prefetch(code) {
   if (!code || st.prefetching === code) return;
   st.prefetching = code;
   try {
-    const r = await D.loadSet(code, neededTfs(), { prio: D.PRIO.prefetch });
+    // まだデータの無い銘柄の10年分は、裏の取り込みと同じゆっくりした順番で（通信を集中させない）
+    const tfs = neededTfs();
+    const has = Object.values(await D.cachedSet(code, tfs)).some((e) => e?.bars?.length);
+    const r = await D.loadSet(code, tfs, { prio: has ? D.PRIO.prefetch : D.PRIO.warm });
     if (r.error) st.lastError = r.error;
   } finally {
     st.prefetching = null;
@@ -378,7 +390,7 @@ function updateStatus(now = Date.now()) {
   const mb = $('modeBadge');
   mb.hidden = !(b.over || approxMode());
   mb.textContent = b.over ? '本日の通信上限' : '始値は近似';
-  mb.title = b.over ? `今日の通信が${b.cap}回に達したため、保存済みのデータで表示しています（明日0時に再開）` : `表示対象が${EXACT_OPEN_MAX}銘柄を超えているため、当日の始値は「${OPEN_LABEL[dataPlan().openMode]}」で近似しています`;
+  mb.title = b.over ? `今日の通信が${b.cap}回に達したため、保存済みのデータで表示しています（明日0時に再開）` : `表示対象が${EXACT_OPEN_MAX}銘柄を超えているため、当日の始値は「${OPEN_LABEL[currentPlan().openMode]}」で近似しています`;
   mb.classList.toggle('warn', b.over);
   const errEl = $('errText');
   errEl.hidden = !err || !!err.budget;
