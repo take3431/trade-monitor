@@ -7,15 +7,15 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="TRADE MONITOR">
-<meta name="app-version" content="20261125101242">
+<meta name="app-version" content="20261125103323">
 <meta name="theme-color" content="#0d1117">
 <title>TRADE MONITOR</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-180.png">
-<link rel="stylesheet" href="css/style.css?v=20261125101242">
-<script src="vendor/lightweight-charts.standalone.production.js?v=20261125101242"></script>
-<script type="module" src="js/app.js?v=20261125101242"></script>
+<link rel="stylesheet" href="css/style.css?v=20261125103323">
+<script src="vendor/lightweight-charts.standalone.production.js?v=20261125103323"></script>
+<script type="module" src="js/app.js?v=20261125103323"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -41,6 +41,7 @@
     <span id="statusText">東証</span>
     
     <span id="errText" class="err" hidden></span>
+    <span id="modeBadge" class="mode-badge" hidden></span>
     <span id="demoBadge" class="badge" hidden>デモデータ</span>
   </div>
   <div class="countdown" id="countdown"></div>
@@ -174,10 +175,12 @@
     <summary>データを取得するタイミング</summary>
     <ul>
       <li><b>表示するとき</b>：保存済みのデータをすぐ表示します。データが動いている時間帯（東証は約20分遅れのため 9:20〜11:50・12:50〜15:50）で、最後の取得から2分以上たっていれば最新のデータを取りに行きます。</li>
-      <li><b>次の銘柄</b>：切り替わる30秒前（間隔が短い場合は切替直後）に1回だけ取得しておきます。</li>
+      <li><b>まとめて取得</b>：この先表示される最大20銘柄を、1回の通信でまとめて更新します（2分に1回まで）。</li>
+      <li><b>その日初めて表示する銘柄</b>：当日の始値を取るため1回だけ個別に取得します（表示対象が100銘柄を超えると、始値を近似にしてこれも省きます）。</li>
+      <li><b>新しく登録した銘柄</b>：すぐに取得します。以前のデータが残っていれば、足りない直近分だけを取ります。</li>
       <li><b>まだデータの無い銘柄</b>：8秒に1件ずつ、順番に取得します（初回だけ日足10年分、以降は直近5日分）。全銘柄そろえば裏での取得はしません。</li>
       <li><b>閉場中</b>：引け後のデータを取得済みなら通信しません。</li>
-      <li><b>上限</b>：1分に12回まで・同時に2本まで。回数制限の応答が来たら全体を一時停止します。</li>
+      <li><b>上限</b>：1日300回まで（超えたら翌日0時まで保存済みのデータで表示）・1分に12回まで・同時に2本まで。</li>
       <li>データの取得先：Yahoo Finance（中継：r.jina.ai）。東証は約20分遅れです。</li>
     </ul>
   </details>

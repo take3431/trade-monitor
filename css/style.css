@@ -306,3 +306,6 @@ tr.drag-placeholder td > * { visibility: hidden; }
   background: var(--bg); color: var(--text); font: inherit; resize: vertical; -webkit-user-select: text; user-select: text; }
 .ask-dialog textarea[hidden] { display: none; }
 .btn.danger-fill { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+.mode-badge { font-size: .7rem; padding: .05rem .4rem; border-radius: 99px; border: 1px solid var(--border2); color: var(--muted); white-space: nowrap; }
+.mode-badge.warn { border-color: var(--warn); color: var(--warn); }

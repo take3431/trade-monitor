@@ -1,7 +1,7 @@
-import * as M from './market.js?v=20261125101242';
-import * as D from './data.js?v=20261125101242';
-import { Stage, themeColors } from './chart.js?v=20261125101242';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125101242';
+import * as M from './market.js?v=20261125103323';
+import * as D from './data.js?v=20261125103323';
+import { Stage, themeColors } from './chart.js?v=20261125103323';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125103323';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -60,8 +60,16 @@ function applyLook() {
   document.querySelector('meta[name=theme-color]').content = settings.theme === 'dark' ? '#0d1117' : '#f4f6f9';
   $('demoBadge').hidden = !DEMO;
 }
+// 表示対象がこの数を超えたら、当日の始値を近似にして通信回数を抑える（1日300回の上限に収めるため）
+const EXACT_OPEN_MAX = 100;
+const approxMode = () => enabledCount() > EXACT_OPEN_MAX;
 function applyData() {
-  D.configure({ demo: DEMO, ttlMs: CACHE_MIN * 60e3 });
+  D.configure({
+    demo: DEMO, ttlMs: CACHE_MIN * 60e3,
+    approxOpen: approxMode(),
+    // まとめて取得の対象：この先表示される20銘柄（表示中の銘柄を含む）
+    upcoming: () => [st.code, ...upcomingFrom(20)].filter(Boolean),
+  });
 }
 function rebuildCharts() {
   const c = themeColors();
@@ -81,6 +89,17 @@ function neighbor(delta, from = st.code) {
   return null;
 }
 // この先表示する銘柄（次の次から n 件）
+// 次に表示する銘柄から n 件
+function upcomingFrom(n) {
+  const out = [];
+  let code = st.code;
+  for (let i = 0; i < n; i++) {
+    code = neighbor(1, code);
+    if (!code || code === st.code || out.includes(code)) break;
+    out.push(code);
+  }
+  return out;
+}
 function upcoming(n) {
   const out = [];
   let code = neighbor(1);
@@ -259,8 +278,14 @@ function updateStatus(now = Date.now()) {
   $('statusText').textContent = `${m === 'US' ? '米国' : '東証'}・${ph.open ? `接続中（${ph.label}）` : ph.label}`;
   const e = stages[front].entries?.[settings.leftTf] || stages[front].entries?.[settings.rightTf];
   const ns = D.netStats();
+  const b = D.budgetStatus();
+  const mb = $('modeBadge');
+  mb.hidden = !(b.over || approxMode());
+  mb.textContent = b.over ? '本日の通信上限' : '始値は近似';
+  mb.title = b.over ? '今日の通信が300回に達したため、保存済みのデータで表示しています（明日0時に再開）' : `表示対象が${EXACT_OPEN_MAX}銘柄を超えているため、当日の始値は最初の1分の値で近似しています`;
+  mb.classList.toggle('warn', b.over);
   const errEl = $('errText');
-  errEl.hidden = !err;
+  errEl.hidden = !err || !!err.budget;
   if (err) {
     errEl.textContent = (e ? '通信エラー：前回データを表示中' : '通信エラー：データ未取得') + '（タップで詳細）';
     errEl.title = String(err.message || err);
@@ -312,6 +337,7 @@ function closeSettings() {
   saveList();
   applyLook();
   applyData();
+  updateStatus();
   const next = JSON.stringify({ tf: [settings.leftTf, settings.rightTf, settings.leftBars, settings.rightBars], ind: settings.ind, t: settings.theme, c: settings.colorMode, f: settings.font });
   st.settingsOpen = false;
   document.body.classList.remove('in-settings');
@@ -668,6 +694,10 @@ $('addForm').addEventListener('submit', (e) => {
   dlg.close();
   $('tableWrap').scrollTop = $('tableWrap').scrollHeight;
   toast(`${code} を登録しました`);
+  applyData();
+  // 登録した銘柄はすぐにデータを取りに行く（裏の順番待ちをしない）。
+  // 以前登録していてデータが残っている銘柄は、足りない直近分だけを取得する。
+  D.loadSet(code, neededTfs(), { prio: D.PRIO.prefetch }).then((r) => { if (r.fetched && !r.error) haveData.add(code); });
 });
 
 /* ---------------- イベント ---------------- */
@@ -680,7 +710,7 @@ function renderNet() {
   const ns = D.netStats();
   $('netSummary').innerHTML = `
     <div><span class="k">直近1分</span><b>${ns.lastMin}</b><span class="u">/ ${ns.perMin}回</span></div>
-    <div><span class="k">今日</span><b>${ns.today}</b><span class="u">回</span></div>
+    <div><span class="k">今日</span><b>${D.budgetStatus().used}</b><span class="u">/ ${D.budgetStatus().cap}回（上限）</span></div>
     <div><span class="k">最終通信</span><b>${ns.lastAt ? M.fmtStamp(ns.lastAt, now) : '—'}</b></div>
     <div><span class="k">状態</span><b>${ns.active ? '通信中' : ns.pausedUntil ? '一時停止中' : '待機中'}</b>${ns.queued ? `<span class="u">待ち${ns.queued}件</span>` : ''}</div>`;
   // これからの予定
