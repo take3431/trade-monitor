@@ -23,7 +23,7 @@ async function sha256(text) {
 function startApp() {
   document.body.classList.remove('locked');
   document.getElementById('gate')?.remove();
-  import('./app.js?v=20261125113707');
+  import('./app.js?v=20261125113748');
 }
 
 function showGate() {
@@ -34,7 +34,7 @@ function showGate() {
   g.innerHTML = `
     <form class="gate-box" autocomplete="off">
       <div class="gate-title">TRADE MONITOR</div>
-      <p class="gate-text"><span class="gate-hint" title="ヒント" aria-label="ヒント：かぼちゃ"><svg viewBox="0 0 64 64" width="34" height="34" aria-hidden="true"><path d="M33 14c0-5 2-8 6-10" fill="none" stroke="#5a8f2e" stroke-width="4" stroke-linecap="round"/><path d="M36 11c5-4 11-3 14 1-5 3-10 3-14-1z" fill="#6fae3a"/><ellipse cx="18" cy="38" rx="12" ry="17" fill="#e8892b"/><ellipse cx="46" cy="38" rx="12" ry="17" fill="#e8892b"/><ellipse cx="25" cy="38" rx="11" ry="19" fill="#f39a33"/><ellipse cx="39" cy="38" rx="11" ry="19" fill="#f39a33"/><ellipse cx="32" cy="38" rx="9" ry="20" fill="#f7a944"/><path d="M32 19v38M24 21c-3 9-3 26 0 34M40 21c3 9 3 26 0 34" fill="none" stroke="#d47a22" stroke-width="1.6" opacity=".7"/></svg></span>パスワードを入力してください</p>
+      <p class="gate-text">パスワードを入力してください<span class="gate-hint" title="ヒント" aria-label="ヒント：かぼちゃ"><svg viewBox="0 0 64 64" width="34" height="34" aria-hidden="true"><path d="M33 14c0-5 2-8 6-10" fill="none" stroke="#5a8f2e" stroke-width="4" stroke-linecap="round"/><path d="M36 11c5-4 11-3 14 1-5 3-10 3-14-1z" fill="#6fae3a"/><ellipse cx="18" cy="38" rx="12" ry="17" fill="#e8892b"/><ellipse cx="46" cy="38" rx="12" ry="17" fill="#e8892b"/><ellipse cx="25" cy="38" rx="11" ry="19" fill="#f39a33"/><ellipse cx="39" cy="38" rx="11" ry="19" fill="#f39a33"/><ellipse cx="32" cy="38" rx="9" ry="20" fill="#f7a944"/><path d="M32 19v38M24 21c-3 9-3 26 0 34M40 21c3 9 3 26 0 34" fill="none" stroke="#d47a22" stroke-width="1.6" opacity=".7"/></svg></span></p>
       <input id="gatePass" type="password" inputmode="text" autocapitalize="characters" spellcheck="false" aria-label="パスワード">
       <button type="submit" class="btn primary block" id="gateOk">開く</button>
       <p class="gate-msg" id="gateMsg"></p>
