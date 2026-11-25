@@ -409,3 +409,4 @@ body.in-settings .alert-stack { top: auto; right: auto; left: calc(1.2rem + env(
 .ov-tile.t-up .ov-chg .v { color: var(--up); }
 .ov-tile.t-down .ov-chg .v { color: var(--down); }
 .ov-empty { color: var(--muted); font-size: .9rem; }
+.tag.idx { background: var(--warn); color: #111; }

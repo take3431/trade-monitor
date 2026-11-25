@@ -1,7 +1,8 @@
 // 表示レイヤー（ステージ）とチャート描画
 // ステージを2枚重ねておき、非表示側に描画してから切り替えることでチラつきを防ぐ。
-import { TF } from './data.js?v=20261125143935';
-import { fmtStamp } from './market.js?v=20261125143935';
+import { TF } from './data.js?v=20261125145412';
+import { isUS, isIndex, yahooJpUrl } from './names.js?v=20261125145412';
+import { fmtStamp } from './market.js?v=20261125145412';
 
 const LC = window.LightweightCharts;
 const JST = 9 * 3600;
@@ -234,11 +235,6 @@ const STAGE_HTML = `
     </div>`).join('')}
   </section>`;
 
-// Yahoo!ファイナンス（日本）の銘柄ページ。日本株は「7203.T」、米国株はティッカーのまま
-function yahooJpUrl(code) {
-  const sym = /^[A-Z]/.test(code) ? code : `${code}.T`;
-  return `https://finance.yahoo.co.jp/quote/${encodeURIComponent(sym)}`;
-}
 
 export class Stage {
   constructor(root) {
@@ -283,12 +279,13 @@ export class Stage {
     e.name.title = 'Yahoo!ファイナンスで開く';
     // 現在値と前日比（日本式：上昇＝赤、下落＝緑。設定で逆にできる）
     const q = entries.quote;
-    const isUs = /^[A-Z]/.test(item.code);
-    const money = (v) => (isUs
-      ? 'US$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-      : fmtPrice(v) + '円');
+    const isUs = isUS(item.code);
+    const idx = isIndex(item.code);
+    const dec2 = (v) => v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    // 指数・為替は単位を付けない（小数2桁）
+    const money = (v) => (isUs ? 'US$' + dec2(v) : idx ? dec2(v) : fmtPrice(v) + '円');
     const sign = (v) => (v > 0 ? '+' : v < 0 ? '\u2212' : '\u00b1');
-    const signed = (v) => (isUs ? sign(v) + Math.abs(v).toFixed(2) : fmtSigned(v));
+    const signed = (v) => (isUs || idx ? sign(v) + dec2(Math.abs(v)) : fmtSigned(v));
     e.quote.hidden = !q || q.price == null;
     if (q && q.price != null) {
       const d = dirClass(q.chg);
@@ -300,10 +297,9 @@ export class Stage {
     e.pos.textContent = pos;
     // データの時刻：Yahoo が返す最終約定時刻（東証は約20分遅れ）。無ければ取得時刻から遅延分を引く
     const last = entries[settings.leftTf] || entries[settings.rightTf];
-    const us = /^[A-Z]/.test(item.code);
-    const asOf = last?.meta?.time ? last.meta.time * 1000 : last?.fetchedAt ? last.fetchedAt - (us ? 0 : 20 * 60e3) : 0;
+    const asOf = last?.meta?.time ? last.meta.time * 1000 : last?.fetchedAt ? last.fetchedAt - (isUs || idx ? 0 : 20 * 60e3) : 0;
     e.time.textContent = asOf ? fmtStamp(asOf) : '';
-    this.panes.forEach((p) => { p.exch = us ? 'US' : 'TSE'; });
+    this.panes.forEach((p) => { p.exch = idx ? 'INDEX' : isUs ? 'US' : 'TSE'; });
     this.fitTitle();
     const label = `${item.code} ${item.name || ''}`.trim();
     this.panes[0].setData(entries[settings.leftTf], settings.leftTf, label, settings.leftBars, keepRange, loading);

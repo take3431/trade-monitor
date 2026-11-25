@@ -133,7 +133,7 @@ function mount(c) {
   el.className = `alert-card ${up ? 'dir-up' : 'dir-down'}`;
   el.dataset.id = c.id;
   el.setAttribute('role', 'alert');
-  const money = (v) => (c.us ? `${fmtNum(v, true)}ドル` : `${fmtNum(v)}円`);
+  const money = (v) => (c.idx ? fmtNum(v, true) : c.us ? `${fmtNum(v, true)}ドル` : `${fmtNum(v)}円`);
   el.innerHTML = `
     <svg class="ico a-ico"><use href="#i-bell"/></svg>
     <div class="a-body">

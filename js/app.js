@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261125143935';
-import * as D from './data.js?v=20261125143935';
-import { Stage, themeColors } from './chart.js?v=20261125143935';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125143935';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125143935';
+import * as M from './market.js?v=20261125145412';
+import * as D from './data.js?v=20261125145412';
+import { Stage, themeColors } from './chart.js?v=20261125145412';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125145412';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125145412';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -67,7 +67,7 @@ function cleanList(raw) {
   for (const x of raw) {
     if (!x || typeof x !== 'object' || typeof x.code !== 'string') continue;
     const code = x.code.trim().toUpperCase().slice(0, 10);
-    if (!(JP_RE.test(code) || US_RE.test(code)) || seen.has(code)) continue;
+    if (!(JP_RE.test(code) || US_RE.test(code) || isIndex(code)) || seen.has(code)) continue;
     seen.add(code);
     const item = { code, name: typeof x.name === 'string' ? x.name.slice(0, 120) : '', enabled: x.enabled !== false };
     // アラート：ON/OFF と設定株価（設定株価が無い銘柄は項目ごと持たない）
@@ -148,7 +148,9 @@ function upcomingFrom(n) {
 }
 const userIsTouching = () => Date.now() < st.touchUntil;
 function enabledCount() { return list.filter((x) => x.enabled).length; }
-const marketOf = (code) => (isUS(code) ? 'US' : 'JP');
+const marketOf = marketOfCode;
+// 価格を小数2桁で扱うもの（米国株・指数・為替）
+const dec2 = (code) => isUS(code) || isIndex(code);
 function marketsInList() { return [...new Set(list.filter((x) => x.enabled).map((x) => marketOf(x.code)))]; }
 function posText(code) {
   const en = list.filter((x) => x.enabled);
@@ -311,14 +313,14 @@ function updateStatus(now = Date.now()) {
   const dot = $('statusDot');
   const err = st.lastError;
   dot.className = `dot ${err ? 'err' : ph.open ? 'ok' : 'closed'}${loading ? ' busy' : ''}`;
-  $('statusText').textContent = `${m === 'US' ? '米国' : '東証'}・${ph.open ? `接続中（${ph.label}）` : ph.label}`;
+  $('statusText').textContent = `${m === 'US' ? '米国' : m === 'X' ? '海外・為替' : '東証'}・${ph.open ? `接続中（${ph.label}）` : ph.label}`;
   const e = stages[front].entries?.[settings.leftTf] || stages[front].entries?.[settings.rightTf];
   const ns = D.netStats();
   const b = D.budgetStatus();
   const mb = $('modeBadge');
   mb.hidden = !(b.over || approxMode());
   mb.textContent = b.over ? '本日の通信上限' : '始値は近似';
-  mb.title = b.over ? '今日の通信が300回に達したため、保存済みのデータで表示しています（明日0時に再開）' : `表示対象が${EXACT_OPEN_MAX}銘柄を超えているため、当日の始値は最初の1分の値で近似しています`;
+  mb.title = b.over ? `今日の通信が${b.cap}回に達したため、保存済みのデータで表示しています（明日0時に再開）` : `表示対象が${EXACT_OPEN_MAX}銘柄を超えているため、当日の始値は最初の1分の値で近似しています`;
   mb.classList.toggle('warn', b.over);
   const errEl = $('errText');
   errEl.hidden = !err || !!err.budget;
@@ -475,7 +477,7 @@ function renderList() {
   $('listBody').innerHTML = list.map((x, i) => `
     <tr data-code="${esc(x.code)}">
       <td class="c-no"><span class="grip" title="ドラッグで並び替え"><svg class="ico"><use href="#i-grip"/></svg></span><span class="no">${String(i + 1).padStart(3, '0')}</span></td>
-      <td class="c-code num">${esc(x.code)}${isUS(x.code) ? '<span class="tag">米</span>' : ''}</td>
+      <td class="c-code num">${esc(x.code)}${isIndex(x.code) ? '<span class="tag idx">指数</span>' : isUS(x.code) ? '<span class="tag">米</span>' : ''}</td>
       <td class="c-name"><button class="link rename">${esc(x.name || '（名称未設定）')}</button></td>
       <td class="c-price r"></td>
       <td class="c-target"><div class="tgt-box"><input class="tgt" type="text" autocomplete="off" enterkeyhint="done" placeholder="株価を入力" aria-label="${esc(x.code)} の設定株価"><span class="tgt-dir"></span></div></td>
@@ -593,7 +595,7 @@ $('selAlertSec').addEventListener('change', (e) => { settings.alertSec = Number(
 const rowOf = (code) => $('listBody').querySelector(`tr[data-code="${CSS.escape(code)}"]`);
 function updateAlertRow(code, tr = rowOf(code), x = list.find((i) => i.code === code)) {
   if (!tr || !x) return;
-  const us = isUS(code);
+  const us = dec2(code);
   const cur = priceOf(code);
   tr.querySelector('.c-price').textContent = cur != null ? fmtNum(cur, us) : '—';
   const on = !!x.alertOn;
@@ -615,12 +617,12 @@ function commitTarget(x, inp) {
   const v = parsePrice(inp.value);
   if (Number.isNaN(v)) {
     toast('設定株価は数字で入力してください');
-    inp.value = x.alertPrice ? fmtNum(x.alertPrice, isUS(x.code)) : '';
+    inp.value = x.alertPrice ? fmtNum(x.alertPrice, dec2(x.code)) : '';
     return;
   }
   if (v == null) delete x.alertPrice; else x.alertPrice = v;
   saveList();
-  inp.value = v == null ? '' : fmtNum(v, isUS(x.code));
+  inp.value = v == null ? '' : fmtNum(v, dec2(x.code));
   updateAlertRow(x.code);
 }
 $('listBody').addEventListener('change', (e) => {
@@ -647,7 +649,7 @@ function fireAlert(x, dir, price) {
   const target = x.alertPrice;
   delete x.alertOn; // 1回通知したら OFF（設定株価の付近で上下しても何度も鳴らないように）
   saveList();
-  if (settings.alertPopup) showAlertCard({ code: x.code, name: x.name, target, price, dir, at: Date.now(), us: isUS(x.code) });
+  if (settings.alertPopup) showAlertCard({ code: x.code, name: x.name, target, price, dir, at: Date.now(), us: isUS(x.code), idx: isIndex(x.code) });
   if (settings.alertSound) playAlarm(settings.alertSec); // 設定した秒数だけ鳴らす（通知を消すと止まる）
 }
 D.onPrice((code, price, q) => {
@@ -683,22 +685,23 @@ function setOverview(on) {
 }
 $('btnOverview').addEventListener('click', () => setOverview(true));
 $('btnOvBack').addEventListener('click', () => setOverview(false));
-const ovMoney = (v, us) => (v == null ? '—' : us ? `US$${fmtNum(v, true)}` : fmtNum(v));
+const ovMoney = (v, us, idx) => (v == null ? '—' : us ? `US$${fmtNum(v, true)}` : idx ? fmtNum(v, true) : fmtNum(v));
 function tileHtml(x) {
   const q = quotes[x.code];
   const us = isUS(x.code);
+  const idx = isIndex(x.code);
   const pct = q?.pct;
   const dir = pct == null ? '' : pct > 0 ? 'up' : pct < 0 ? 'down' : '';
   // 色の濃さ：前日比 0〜5% を 8〜38% の濃さに（5%以上は同じ）
   const heat = dir ? 8 + (Math.min(Math.abs(pct), 5) / 5) * 30 : 0;
   const sign = (v) => (v > 0 ? '+' : v < 0 ? '−' : '±');
-  const chg = q?.chg == null ? '' : `${sign(q.chg)}${us ? Math.abs(q.chg).toFixed(2) : fmtNum(Math.abs(q.chg))}`;
+  const chg = q?.chg == null ? '' : `${sign(q.chg)}${us || idx ? fmtNum(Math.abs(q.chg), true) : fmtNum(Math.abs(q.chg))}`;
   const pctTxt = pct == null ? '' : `${sign(pct)}${Math.abs(pct).toFixed(2)}%`;
-  const flags = `${x.alertOn ? '<svg class="ico" aria-label="アラート中"><use href="#i-bell"/></svg>' : ''}${us ? '<span class="ov-badge">米</span>' : ''}${x.enabled ? '' : '<span class="ov-badge">表示OFF</span>'}`;
+  const flags = `${x.alertOn ? '<svg class="ico" aria-label="アラート中"><use href="#i-bell"/></svg>' : ''}${idx ? '<span class="ov-badge">指数</span>' : us ? '<span class="ov-badge">米</span>' : ''}${x.enabled ? '' : '<span class="ov-badge">表示OFF</span>'}`;
   return `<button type="button" class="ov-tile ${dir ? `t-${dir}` : ''}${x.enabled ? '' : ' off'}" data-code="${esc(x.code)}" style="--heat:${heat.toFixed(0)}%">
     <div class="ov-top"><span>${esc(x.code)}</span><span class="ov-flags">${flags}</span></div>
     <div class="ov-name">${esc(x.name || '（名称未設定）')}</div>
-    <div class="ov-price">${q ? ovMoney(q.price, us) : '<span class="ov-empty">データ未取得</span>'}${q && !us ? '<small>円</small>' : ''}</div>
+    <div class="ov-price">${q ? ovMoney(q.price, us, idx) : '<span class="ov-empty">データ未取得</span>'}${q && !us && !idx ? '<small>円</small>' : ''}</div>
     <div class="ov-chg"><span class="v">${chg}${pctTxt ? ` (${pctTxt})` : ''}</span><span class="ov-time">${q?.time ? M.fmtStamp(q.time * 1000) : ''}</span></div>
   </button>`;
 }
@@ -870,12 +873,13 @@ function ask(msg, { input = null, ok = 'OK', danger = false, alert: only = false
 /* ---------------- 新規登録ダイアログ ---------------- */
 const dlg = $('addDialog');
 const normCode = (v) => {
-  const c = String(v || '').trim().normalize('NFKC').toUpperCase().replace(/\.T$/, '').replace(/\./g, '-');
-  return c;
+  const raw = String(v || '').trim().normalize('NFKC').toUpperCase();
+  if (isIndex(raw)) return raw; // 指数・為替（^N225、USDJPY=X など）はそのまま
+  return raw.replace(/\.T$/, '').replace(/\./g, '-');
 };
-const validCode = (c) => JP_RE.test(c) || US_RE.test(c);
+const validCode = (c) => JP_RE.test(c) || US_RE.test(c) || isIndex(c);
 function setMarketLabel(code) {
-  $('addMarketLabel').value = !code ? '' : isUS(code) ? '米国株' : JP_RE.test(code) ? '日本株（東証）' : '';
+  $('addMarketLabel').value = !code ? '' : isIndex(code) ? '指数・為替など' : isUS(code) ? '米国株' : JP_RE.test(code) ? '日本株（東証）' : '';
 }
 
 $('btnAdd').addEventListener('click', () => {
@@ -920,7 +924,7 @@ function doSearch() {
   let results = searchLocal(q);
   const asCode = normCode(q);
   // 入力がそのままコード／ティッカーとして使える形なら、候補の最後に追加（辞書に無い新しい銘柄用）
-  if (!results.some((x) => x.code === asCode) && validCode(asCode)) results.push({ code: asCode, name: lookupName(asCode) || '（コードとして登録）', market: isUS(asCode) ? '米国' : '東証' });
+  if (!results.some((x) => x.code === asCode) && validCode(asCode)) results.push({ code: asCode, name: lookupName(asCode) || '（コードとして登録）', market: isIndex(asCode) ? '指数' : isUS(asCode) ? '米国' : '東証' });
   const ascii = /^[\x20-\x7E]+$/.test(q);
   showResults(results, results.length ? '候補をタップしてください' : (ascii ? '検索中…' : '見つかりませんでした'));
   // Yahoo 検索は通信が必要なので、英字の入力が止まってから1回だけ
@@ -971,7 +975,7 @@ function renderNet() {
   const ns = D.netStats();
   $('netSummary').innerHTML = `
     <div><span class="k">直近1分</span><b>${ns.lastMin}</b><span class="u">/ ${ns.perMin}回</span></div>
-    <div><span class="k">今日</span><b>${D.budgetStatus().used}</b><span class="u">/ ${D.budgetStatus().cap}回（上限）</span></div>
+    <div><span class="k">今日</span><b>${D.budgetStatus().used}</b><span class="u">/ ${D.budgetStatus().cap}回（初回取り込み ${D.budgetStatus().init}/${D.INIT_CAP}）</span></div>
     <div><span class="k">最終通信</span><b>${ns.lastAt ? M.fmtStamp(ns.lastAt, now) : '—'}</b></div>
     <div><span class="k">保存データ</span><b>${storageText}</b></div>
     <div><span class="k">状態</span><b>${ns.active ? '通信中' : ns.pausedUntil ? '一時停止中' : '待機中'}</b>${ns.queued ? `<span class="u">待ち${ns.queued}件</span>` : ''}</div>`;

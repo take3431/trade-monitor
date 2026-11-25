@@ -9,12 +9,12 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261125143935';
-import { isUS } from './names.js?v=20261125143935';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261125145412';
+import { yahooSymbol, marketOfCode } from './names.js?v=20261125145412';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
-const ySym = (code) => (isUS(code) ? code : `${code}.T`);
-const mkt = (code) => (isUS(code) ? 'US' : 'JP');
+const ySym = yahooSymbol;
+const mkt = marketOfCode;
 
 const YH = ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com'];
 
@@ -101,28 +101,40 @@ let hostFlip = 0;
 
 // 1件の Yahoo API 呼び出しを、経路を切り替えながら成功するまで試みる
 /* ======================= 1日の通信回数の上限 =======================
-   何があっても1日（日本時間0時区切り）300回を超えない。
-   ・裏での初回読み込みは 240回まで（表示に必要な通信のために60回は残しておく）
-   ・上限に達したら、その日は保存済みのデータで表示を続ける */
+   日本時間0時区切りで数える。上限に達したら、その日は保存済みのデータで表示を続ける。
+   ・ふだんの更新：1日300回まで（裏での取得は240回まで。表示に必要な通信のために60回は残す）
+   ・初回の取り込み（まだデータの無い銘柄の10年分）：別枠で1日1,000回まで
+     999銘柄を登録しても、その日のうちに全銘柄のチャートがそろうようにするため。
+     1分あたりの回数の制限（12回・裏では8回）は同じなので、通信の速さ（相手への負担）は変わらない。 */
 export const DAILY_CAP = 300;
 const WARM_CAP = 240;
+export const INIT_CAP = 1000;
 const BUDGET_KEY = 'tm.budget.v1';
-let budget = { d: '', n: 0 };
+let budget = { d: '', n: 0, i: 0 };
 try { budget = JSON.parse(localStorage.getItem(BUDGET_KEY)) || budget; } catch { /* ignore */ }
 function budgetToday() {
   const today = dayKey(Date.now());
-  if (budget.d !== today) budget = { d: today, n: 0 };
+  if (budget.d !== today) budget = { d: today, n: 0, i: 0 };
+  budget.i = budget.i || 0;
   return budget;
 }
-function useBudget(prio) {
+function useBudget(prio, initial = false) {
   const b = budgetToday();
-  if (b.n >= (prio === PRIO.warm ? WARM_CAP : DAILY_CAP)) return false;
-  b.n++;
+  if (initial) {
+    if (b.i >= INIT_CAP) return false;
+    b.i++;
+  } else {
+    if (b.n >= (prio === PRIO.warm ? WARM_CAP : DAILY_CAP)) return false;
+    b.n++;
+  }
   try { localStorage.setItem(BUDGET_KEY, JSON.stringify(b)); } catch { /* ignore */ }
   return true;
 }
-export function budgetStatus() { const b = budgetToday(); return { used: b.n, cap: DAILY_CAP, over: b.n >= DAILY_CAP }; }
-const overError = () => Object.assign(new Error('本日の通信上限（300回）に達しました'), { budget: true });
+export function budgetStatus() {
+  const b = budgetToday();
+  return { used: b.n, cap: DAILY_CAP, over: b.n >= DAILY_CAP, init: b.i, initCap: INIT_CAP, initOver: b.i >= INIT_CAP };
+}
+const overError = () => Object.assign(new Error(`本日の通信上限（${DAILY_CAP}回）に達しました`), { budget: true });
 
 /* ======================= 通信の記録（画面の「通信状況」で表示） ======================= */
 const LOG_MAX = 80;
@@ -165,7 +177,7 @@ function fetchYahoo(path, ctx = {}, check = (j) => j && j.chart) {
     const finish = () => { done = true; clearTimeout(hedge); ctrls.forEach((c) => c.abort()); };
     const launch = () => {
       if (done || idx >= order.length) return;
-      if (!useBudget(ctx.prio)) {
+      if (!useBudget(ctx.prio, !!ctx.initial)) {
         if (pending === 0) { finish(); reject(overError()); }
         return;
       }
@@ -238,7 +250,7 @@ function schedule(prio, fn) {
 }
 function pump() {
   if (active >= MAX_ACTIVE || !queue.length) return;
-  if (budgetStatus().over) { while (queue.length) queue.shift().reject(overError()); return; }
+  { const bs = budgetStatus(); if (bs.over && bs.initOver) { while (queue.length) queue.shift().reject(overError()); return; } }
   const now = Date.now();
   while (starts.length && now - starts[0] > 60e3) starts.shift();
   const limit = queue[0].prio === PRIO.warm ? PER_MIN_WARM : PER_MIN;
@@ -363,7 +375,7 @@ let registered = () => [];
 export function setRegistered(fn) { registered = fn; }
 const KEEP_REMOVED_MS = 30 * 86400e3;
 const KEEP_5M_MS = 3 * 86400e3;
-const MAX_ENTRIES = 1300;
+const MAX_ENTRIES = 2200; // 999銘柄の日足＋5分足が収まる数
 export async function maintain({ aggressive = false } = {}) {
   const keys = (await idb('readonly', (s) => s.getAllKeys())) || [];
   if (!keys.length) return { removed: 0, total: 0 };
@@ -549,17 +561,17 @@ function refreshBase(code, prio) {
     }
     const base = await getStored(code, 'base');
     const lastT = base?.bars?.length ? base.bars[base.bars.length - 1][0] * 1000 : 0;
-    let full = !base || !base.bars?.length || now - (base.fullAt || 0) > 30 * 86400e3 || now - lastT > 25 * 86400e3;
+    let full = !base || !base.bars?.length || fullDue(code, base, now) || now - lastT > 25 * 86400e3;
     // 継ぎ足しは通常「直近5日分」だけ（約1KB）。4日以上空いたときは1か月分
     const range = full ? '10y' : now - lastT < 4 * 86400e3 ? '5d' : '1mo';
     const why = !base?.bars?.length ? '日足10年分（初回）' : base.fullAt === 0 ? '日足10年分（分割・併合の反映）' : '日足10年分（定期の取り直し）';
     let parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=${range}&includeAdjustedClose=false`,
-      { code, prio, what: full ? why : `日足の更新（直近${range === '5d' ? '5日' : '1か月'}）` }));
+      { code, prio, initial: full, what: full ? why : `日足の更新（直近${range === '5d' ? '5日' : '1か月'}）` }));
     // 継ぎ足し分に含まれる確定済みの過去の終値が、保存済みと食い違えば分割・併合 → 10年分を取り直す
     if (!full && splitDetected(base.bars, parsed.bars.slice(0, -1).map((b) => [b[0], b[4]])) && takeSplitRefetch(code)) {
       full = true;
       parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=10y&includeAdjustedClose=false`,
-        { code, prio, what: '日足10年分（分割・併合を検知して取り直し）' }));
+        { code, prio, initial: true, what: '日足10年分（分割・併合を検知して取り直し）' }));
     }
     const daily = full ? dedupeDaily(parsed.bars) : mergeTail(base.bars, parsed.bars);
     // 値が前回と同じ（取引が無かった等）なら、保存済みのデータは書き換えず取得時刻だけ更新する
@@ -652,7 +664,16 @@ function takeSplitRefetch(code) {
   try { localStorage.setItem(SPLIT_KEY, JSON.stringify(g)); } catch { /* ignore */ }
   return true;
 }
-const needsFull = (b) => !b?.bars?.length || Date.now() - (b.fullAt || 0) > 30 * 86400e3;
+/* 10年分の定期的な取り直し：分割・併合は自動で検知できるので、念のため約半年に1回だけ。
+   銘柄ごとに日をずらし（150〜209日）、多くの銘柄を同じ日に登録しても取り直しが1日に集中しないようにする。
+   分割・併合を検知した銘柄（fullAt = 0）はすぐに取り直す。 */
+function fullDue(code, b, now = Date.now()) {
+  if (!b?.fullAt) return true;
+  let h = 0;
+  for (const ch of code) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return now - b.fullAt > (150 + (h % 60)) * 86400e3;
+}
+const needsFull = (b, code) => !b?.bars?.length || fullDue(code, b);
 
 function mergeSpark(base, x, approxOpen, code) {
   const ts = x.timestamp;
@@ -758,7 +779,7 @@ async function refreshViaBatch(code, prio) {
   const now = Date.now();
   const own = await getStored(code, 'base');
   // 正確モードで当日の足が無い（その日初めての更新）なら、まとめて取得では始値が取れないので個別に取得
-  if (needsFull(own)) return true;
+  if (needsFull(own, code)) return true;
   if (!cfg.approxOpen && !hasTodayBar(own)) return true;
   const list = [code];
   for (const c of cfg.upcoming()) {
@@ -766,7 +787,7 @@ async function refreshViaBatch(code, prio) {
     if (list.includes(c) || batchWaiters.has(c)) continue;
     const b = await getStored(c, 'base');
     if (!b?.bars?.length || isFresh(b.fetchedAt, cfg.ttlMs, now, mkt(c))) continue;
-    if (needsFull(b)) continue; // 10年分の取り直しが必要な銘柄は、表示するときに個別に取得する
+    if (needsFull(b, c)) continue; // 10年分の取り直しが必要な銘柄は、表示するときに個別に取得する
     if (!cfg.approxOpen && !hasTodayBar(b)) continue; // その銘柄を表示するときに個別に取得する
     list.push(c);
   }
@@ -798,7 +819,7 @@ export async function loadSet(code, tfs, { force = false, onEntry = null, prio =
     if (!force && fresh) continue;
     try {
       let v;
-      if (kind === 'base' && cur?.bars?.length && !force && !cfg.demo && Date.now() - (cur.fullAt || 0) < 30 * 86400e3) {
+      if (kind === 'base' && cur?.bars?.length && !force && !cfg.demo && !fullDue(code, cur)) {
         // まとめて取得で更新。できなかった場合（当日の始値が無い・過去の足が抜けている）だけ個別に取得
         let left = true;
         try { left = await refreshViaBatch(code, prio); } catch (e) { if (e.budget) throw e; }
