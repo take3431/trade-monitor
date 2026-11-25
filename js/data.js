@@ -9,8 +9,8 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261125170634';
-import { yahooSymbol, marketOfCode } from './names.js?v=20261125170634';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261125172431';
+import { yahooSymbol, marketOfCode } from './names.js?v=20261125172431';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = yahooSymbol;
@@ -183,6 +183,26 @@ function checkLeader() {
   } catch { leader = true; } // 保存できない環境では、今までどおり通信する
 }
 export const isLeader = () => { checkLeader(); return leader; };
+
+/* ---- 通信が切れているとき ----
+   端末がネットにつながっていない間は取りに行かない（1日の回数も数えない）。
+   つながっているはずなのに全部の経路が「接続不可」で失敗したときも、通信切れとみなす。
+   その失敗は中継の評価・失敗の回数・1日の回数に入れず、30秒おいてから再開する。 */
+let netDownUntil = 0;
+export const isOffline = () => (typeof navigator !== 'undefined' && navigator.onLine === false) || netDownUntil > Date.now();
+const offlineError = () => quietError('通信が切れています（保存済みのデータで表示します）', 'offline');
+if (typeof window !== 'undefined') window.addEventListener('online', () => { netDownUntil = 0; });
+
+/* ---- 端末の時計のずれ ----
+   取引時間かどうかは端末の時計で判断するため、時計が遅れていると閉場後も「取引中」と思って通信してしまう。
+   Yahoo の「最後の取引時刻」が端末の時刻より10分以上未来なら、時計が遅れているとみなして画面で知らせる。 */
+let clockBehindMs = 0;
+export const clockSkew = () => clockBehindMs;
+function noteMarketTime(t) {
+  if (!t) return;
+  const ahead = t * 1000 - Date.now();
+  clockBehindMs = ahead > 10 * 60e3 ? ahead : 0;
+}
 export const amLeader = () => leader; // 確認だけ（保存領域を読まない。画面の表示用）
 if (typeof window !== 'undefined') {
   setInterval(checkLeader, 4000);
@@ -217,6 +237,12 @@ function budgetToday() {
   if (budget.d !== today) budget = { d: today, n: 0, i: 0 };
   budget.i = budget.i || 0;
   return budget;
+}
+// 通信切れで相手に届かなかった分は、1日の回数から戻す
+function refundBudget(initial) {
+  const b = budgetToday();
+  if (initial) b.i = Math.max(0, b.i - 1); else b.n = Math.max(0, b.n - 1);
+  try { localStorage.setItem(BUDGET_KEY, JSON.stringify(b)); } catch { /* ignore */ }
 }
 function useBudget(prio, initial = false) {
   const b = budgetToday();
@@ -273,11 +299,25 @@ export function netStats() {
 
 function fetchYahoo(path, ctx = {}, check = (j) => j && j.chart) {
   if (!isLeader()) return Promise.reject(followerError());
+  if (isOffline()) return Promise.reject(offlineError());
   // 通信を控えている間は、試す経路も2つまで（失敗が続いている相手に何度も頼まない）
   const order = cooling() ? routeOrder().slice(0, 2) : routeOrder();
   return new Promise((resolve, reject) => {
-    let idx = 0, pending = 0, done = false, hit429 = false, n429 = 0;
+    let idx = 0, pending = 0, done = false, hit429 = false, n429 = 0, tries = 0;
     const errs = [], ctrls = [];
+    const netFails = []; // 「接続不可」で失敗した経路（通信切れかどうかは最後に判断する）
+    // 最後に：全部「接続不可」なら通信切れ（数えない）。そうでなければ、保留していた失敗を数える
+    const giveUp = () => {
+      finish();
+      if (netFails.length && netFails.length === tries) {
+        for (let i = 0; i < tries; i++) refundBudget(!!ctx.initial);
+        netDownUntil = Date.now() + 30e3;
+        reject(offlineError());
+        return;
+      }
+      for (const r of netFails) { routeFail(r, 0); noteFailure(); }
+      reject(new Error(errs.join(' / ') || '取得失敗'));
+    };
     let hedge = null;
     const finish = () => { done = true; clearTimeout(hedge); ctrls.forEach((c) => c.abort()); };
     const launch = () => {
@@ -286,6 +326,7 @@ function fetchYahoo(path, ctx = {}, check = (j) => j && j.chart) {
         if (pending === 0) { finish(); reject(overError()); }
         return;
       }
+      tries++;
       const r = order[idx++];
       const url = `${YH[hostFlip++ % 2]}${path}${path.includes('?') ? '&' : '?'}_=${Math.floor(Date.now() / 30000)}`;
       const ctrl = new AbortController();
@@ -301,8 +342,15 @@ function fetchYahoo(path, ctx = {}, check = (j) => j && j.chart) {
           status = res.status;
           if (status === 429 || status === 503) retryAfter = retryAfterOf(res);
           if (!res.ok) throw new Error(status === 401 || status === 403 ? '拒否' : status === 429 ? '回数制限' : `HTTP ${status}`);
-          const json = r.parse(await res.text());
+          const text = await res.text();
+          // 中継によっては、回数制限を成功（200）の応答の文章で知らせてくる。その場合も 429 と同じに扱う
+          if (/too many requests|rate.?limit(ed)?|quota exceeded/i.test(text.slice(0, 600)) && !/^\s*\{"(chart|spark|quotes|explains)"/.test(text)) {
+            status = 429;
+            throw new Error('回数制限');
+          }
+          const json = r.parse(text);
           if (!check(json)) throw new Error('応答形式不正');
+          noteMarketTime(json?.chart?.result?.[0]?.meta?.regularMarketTime);
           ev.ok = true; ev.ms = Date.now() - t0;
           if (done) { ev.note = '別経路が先に応答'; record(ev); return; }
           record(ev);
@@ -314,9 +362,14 @@ function fetchYahoo(path, ctx = {}, check = (j) => j && j.chart) {
           ev.ms = Date.now() - t0; ev.note = why;
           record(ev);
           if (done) return;
-          routeFail(r, status, retryAfter, !hit429);
-          if (status === 429) { hit429 = true; n429++; }
-          if (status !== 404) noteFailure(); // 404 は銘柄コード違いなので、相手の混雑とは数えない
+          if (e.name === 'TypeError' && !status) {
+            netFails.push(r); // 接続不可：端末側の通信切れかもしれないので、数えるのは最後に判断
+            if (typeof navigator !== 'undefined' && navigator.onLine === false) idx = order.length; // 明らかに切れていれば残りは試さない
+          } else {
+            routeFail(r, status, retryAfter, !hit429);
+            if (status === 429) { hit429 = true; n429++; }
+            if (status !== 404) noteFailure(); // 404 は銘柄コード違いなので、相手の混雑とは数えない
+          }
           errs.push(`${r.label}: ${why}`);
         } finally {
           clearTimeout(timer);
@@ -324,7 +377,7 @@ function fetchYahoo(path, ctx = {}, check = (j) => j && j.chart) {
           if (!done) {
             // 2つの経路で続けて回数制限を受けたら、残りの経路は試さない（相手側が混んでいるので引く）
             if (idx < order.length && n429 < 2) launch();
-            else if (pending === 0) { finish(); reject(new Error(errs.join(' / ') || '取得失敗')); }
+            else if (pending === 0) giveUp();
           }
         }
       })();
@@ -722,9 +775,10 @@ function i5Today() {
 function refreshIntraday(code, prio) {
   return once(keyOf(code, '5m'), () => schedule(prio, async () => {
     const now = Date.now();
-    if (!cfg.demo) { const c = i5Today(); c.n++; try { localStorage.setItem(I5_KEY, JSON.stringify(c)); } catch { /* ignore */ } }
     const bars = cfg.demo ? demoIntraday(code)
       : parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=5m&range=5d`, { code, prio, what: '5分足' })).bars;
+    // 5分足の1日の回数は、取れたときだけ数える（失敗した分で上限に早く届かないように）
+    if (!cfg.demo) { const c = i5Today(); c.n++; try { localStorage.setItem(I5_KEY, JSON.stringify(c)); } catch { /* ignore */ } }
     const v = { bars, meta: {}, fetchedAt: now };
     await putStored(code, '5m', v);
     return v;
@@ -1045,25 +1099,9 @@ export async function searchRemote(q) {
   const key = q.trim().toLowerCase();
   const hit = searchCache.get(key);
   if (!(hit && Date.now() - hit.at < 10 * 60e3) && !isLeader()) throw followerError();
-  const json = hit && Date.now() - hit.at < 10 * 60e3 ? hit.json : await schedule(PRIO.show, async () => {
-    const order = routeOrder();
-    let last;
-    for (const r of order) {
-      if (!useBudget(PRIO.show)) throw overError();
-      const t0 = Date.now();
-      const ev = { t: t0, code: '', what: `銘柄検索「${q}」`, route: r.label, ok: false, ms: 0, note: '' };
-      try {
-        const res = await fetch(r.build(`${YH[1]}/v1/finance/search?q=${enc(q)}&quotesCount=15&newsCount=0&lang=ja-JP&region=JP`), { cache: 'no-store' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const t = await res.text();
-        const i = t.indexOf('{');
-        const j = r.id === 'allorigins-get' ? JSON.parse(JSON.parse(t).contents) : JSON.parse(t.slice(i, t.lastIndexOf('}') + 1));
-        ev.ok = true; ev.ms = Date.now() - t0; record(ev);
-        return j;
-      } catch (e) { last = e; ev.ms = Date.now() - t0; ev.note = e.message; record(ev); }
-    }
-    throw last || new Error('検索失敗');
-  });
+  const json = hit && Date.now() - hit.at < 10 * 60e3 ? hit.json : await schedule(PRIO.show, () => fetchYahoo(
+    `/v1/finance/search?q=${enc(q)}&quotesCount=15&newsCount=0&lang=ja-JP&region=JP`,
+    { code: '', prio: PRIO.show, what: `銘柄検索「${q}」` }, (j) => j && Array.isArray(j.quotes)));
   if (!hit || hit.json !== json) searchCache.set(key, { at: Date.now(), json });
   return (json.quotes || [])
     .filter((x) => typeof x.symbol === 'string' && /^(EQUITY|ETF)$/.test(x.quoteType || '')

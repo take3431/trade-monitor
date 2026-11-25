@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261125170634';
-import * as D from './data.js?v=20261125170634';
-import { Stage, themeColors } from './chart.js?v=20261125170634';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125170634';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125170634';
+import * as M from './market.js?v=20261125172431';
+import * as D from './data.js?v=20261125172431';
+import { Stage, themeColors } from './chart.js?v=20261125172431';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125172431';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125172431';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -414,12 +414,16 @@ function updateStatus(now = Date.now()) {
   const mb = $('modeBadge');
   const cool = D.cooling();
   const follower = !D.amLeader();
-  mb.hidden = !(b.over || cool || follower || approxMode());
-  mb.textContent = b.over ? '本日の通信上限' : cool ? '通信を控えています' : follower ? '別のタブで通信中' : '始値は近似';
+  const offline = D.isOffline();
+  const skew = D.clockSkew();
+  mb.hidden = !(b.over || offline || skew || cool || follower || approxMode());
+  mb.textContent = b.over ? '本日の通信上限' : offline ? '通信が切れています' : skew ? '端末の時計が遅れています' : cool ? '通信を控えています' : follower ? '別のタブで通信中' : '始値は近似';
   mb.title = b.over ? `今日の通信が${b.cap}回に達したため、保存済みのデータで表示しています（明日0時に再開）`
+    : offline ? 'ネットにつながっていないため、保存済みのデータで表示しています（つながったら自動で再開。この間は1日の通信回数に数えません）'
+    : skew ? `端末の時計が約${Math.round(skew / 60e3)}分遅れています。取引時間の判定がずれて余計な通信をすることがあるので、端末の設定で時刻を「自動」にしてください`
     : cool ? '回数制限や通信の失敗が続いたため、しばらく通信を控えています（相手の負担を減らし、ban を防ぐため）'
     : follower ? 'このアプリを別のタブでも開いているため、通信はそちらに任せ、保存済みのデータで表示しています' : `表示対象が${EXACT_OPEN_MAX}銘柄を超えているため、当日の始値は「${OPEN_LABEL[currentPlan().openMode]}」で近似しています`;
-  mb.classList.toggle('warn', b.over);
+  mb.classList.toggle('warn', b.over || !!skew);
   const errEl = $('errText');
   errEl.hidden = !err || !!err.budget || !!err.quiet;
   if (err) {
@@ -1141,6 +1145,9 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowLeft') go(-1);
   else if (e.key === ' ') { e.preventDefault(); $('btnPause').click(); }
 });
+// 通信が戻ったら、表示中の銘柄をすぐに最新化する
+window.addEventListener('online', () => { if (!st.settingsOpen && st.code && !document.hidden) setTimeout(() => show(st.code), 2000); updateStatus(); });
+window.addEventListener('offline', () => updateStatus());
 document.addEventListener('pointerdown', (e) => {
   keepAwake();
   unlockAudio();
@@ -1269,10 +1276,13 @@ $('btnImport').addEventListener('click', async () => {
 
 /* ---------------- 新しい版の自動読み込み ----------------
    開きっぱなしの端末でも、アプリを更新したら自動で新しい版に切り替える。
-   15分に1回、小さなファイル（version.json、GitHub 上）を確認するだけで、株価の取得先には通信しない。 */
+   1時間に1回、小さなファイル（version.json、GitHub 上）を確認するだけで、株価の取得先には通信しない。 */
 const APP_VERSION = document.querySelector('meta[name="app-version"]')?.content || '0';
+let lastUpdateCheck = Date.now();
 async function checkUpdate() {
   if (document.hidden || st.settingsOpen || userIsTouching() || netDlg.open || dlg.open || $('askDialog').open) return;
+  if (Date.now() - lastUpdateCheck < 55 * 60e3 || D.isOffline()) return; // 確認は1時間に1回（画面に戻ったときも同じ）
+  lastUpdateCheck = Date.now();
   try {
     const r = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
     if (!r.ok) return;
@@ -1284,7 +1294,7 @@ async function checkUpdate() {
     location.reload();
   } catch { /* オフライン等は無視 */ }
 }
-setInterval(checkUpdate, 15 * 60e3);
+setInterval(checkUpdate, 5 * 60e3); // 5分ごとに見て、前回の確認から1時間たっていれば確認する
 document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });
 
 /* ---------------- 保存領域の掃除 ---------------- */
