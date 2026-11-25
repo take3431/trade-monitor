@@ -9,6 +9,11 @@
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
 import { isFresh, dayKey, marketPhase } from './market.js';
+import { isUS } from './names.js';
+
+// Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
+const ySym = (code) => (isUS(code) ? code : `${code}.T`);
+const mkt = (code) => (isUS(code) ? 'US' : 'JP');
 
 const YH = ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com'];
 
@@ -83,6 +88,7 @@ function routeFail(r, status) {
   r.score *= 0.6;
   const ms = status === 401 || status === 403 ? 30 * 60e3 : status === 429 ? 90e3 : 20e3;
   cooldown.set(r.id, Date.now() + ms);
+  if (status === 429) pauseAll(15e3); // 回数制限を受けたら全体の通信も少し止める
 }
 export function routeStatus() {
   return [customRoute(), ...ROUTES].filter(Boolean).map((r) => `${r.label}: ${Math.round(r.score * 100)}%${cooldown.get(r.id) > Date.now() ? '（休止中）' : ''}`);
@@ -141,10 +147,18 @@ function fetchYahoo(path) {
 
 /* ======================= 優先度付きキュー ======================= */
 export const PRIO = { show: 0, prefetch: 1, warm: 2 };
+// 通信量の上限（中継先・Yahoo から制限されないための安全装置）
+//  - 同時通信は2本まで、開始間隔は1.5秒以上
+//  - 1分間に開始する通信は12回まで（表示中の銘柄は優先。裏の先回り取得は8回まで）
 const MAX_ACTIVE = 2;
-const MIN_GAP_MS = 1200; // 連続アクセスの間隔（中継先の回数制限対策）
+const MIN_GAP_MS = 1500;
+const PER_MIN = 12;
+const PER_MIN_WARM = 8;
 let active = 0, lastStart = 0;
+const starts = [];
 const queue = [];
+let hold = 0; // 回数制限を受けたら全体を一時停止する時刻
+export function pauseAll(ms) { hold = Math.max(hold, Date.now() + ms); }
 
 function schedule(prio, fn) {
   return new Promise((resolve, reject) => {
@@ -155,11 +169,16 @@ function schedule(prio, fn) {
 }
 function pump() {
   if (active >= MAX_ACTIVE || !queue.length) return;
-  const wait = lastStart + MIN_GAP_MS - Date.now();
-  if (wait > 0) { clearTimeout(pump.t); pump.t = setTimeout(pump, wait); return; }
+  const now = Date.now();
+  while (starts.length && now - starts[0] > 60e3) starts.shift();
+  const limit = queue[0].prio === PRIO.warm ? PER_MIN_WARM : PER_MIN;
+  let wait = Math.max(lastStart + MIN_GAP_MS - now, hold - now);
+  if (starts.length >= limit) wait = Math.max(wait, starts[0] + 60e3 - now);
+  if (wait > 0) { clearTimeout(pump.t); pump.t = setTimeout(pump, wait + 5); return; }
   const job = queue.shift();
   active++;
-  lastStart = Date.now();
+  lastStart = now;
+  starts.push(now);
   job.fn().then(job.resolve, job.reject).finally(() => { active--; pump(); });
   pump();
 }
@@ -260,10 +279,33 @@ function aggregate(bars, keyFn) {
 const weekKey = (t) => { const d = new Date((t + 9 * 3600) * 1000); return dayKey((t - ((d.getUTCDay() + 6) % 7) * 86400) * 1000); };
 const monthKey = (t) => dayKey(t * 1000).slice(0, 7);
 
+// 日足は直近約2年分だけ保存し、週足・月足は10年分の集計結果を保存する（保存容量を約1/3に）
+const KEEP_DAILY = 520;
+function packBase(daily, prev, full) {
+  const wkNew = aggregate(daily, weekKey);
+  const moNew = aggregate(daily, monthKey);
+  let wk = wkNew, mo = moNew;
+  if (!full && prev) {
+    // 継ぎ足し：手元の日足から作れる期間だけ差し替える（先頭の期間は途中からなので使わない）
+    const splice = (old, fresh, keyFn) => {
+      if (fresh.length < 2) return old || fresh;
+      const from = keyFn(fresh[1][0]);
+      return (old || []).filter((b) => keyFn(b[0]) < from).concat(fresh.slice(1));
+    };
+    const pw = prev.wk || aggregate(prev.bars, weekKey);
+    const pm = prev.mo || aggregate(prev.bars, monthKey);
+    wk = splice(pw, wkNew, weekKey);
+    mo = splice(pm, moNew, monthKey);
+  }
+  return { bars: daily.slice(-KEEP_DAILY), wk, mo };
+}
+
 const derived = new Map();
 function deriveEntry(code, base, tf) {
   if (!base) return null;
   if (tf === '1d') return base;
+  if (tf === '1wk' && base.wk) return { ...base, bars: base.wk };
+  if (tf === '1mo' && base.mo) return { ...base, bars: base.mo };
   const slot = `${keyOf(code, 'base')}|${tf}`;
   const hit = derived.get(slot);
   if (hit && hit.at === base.fetchedAt && hit.n === base.bars.length) return hit.v;
@@ -326,16 +368,16 @@ function refreshBase(code, prio) {
   return once(keyOf(code, 'base'), () => schedule(prio, async () => {
     const now = Date.now();
     if (cfg.demo) {
-      const v = { bars: demoDaily(code), meta: { name: '' }, fetchedAt: now, fullAt: now };
+      const v = { ...packBase(demoDaily(code), null, true), meta: { name: '' }, fetchedAt: now, fullAt: now };
       await putStored(code, 'base', v);
       return v;
     }
     const base = await getStored(code, 'base');
     const lastT = base?.bars?.length ? base.bars[base.bars.length - 1][0] * 1000 : 0;
     const full = !base || !base.bars?.length || now - (base.fullAt || 0) > 30 * 86400e3 || now - lastT > 25 * 86400e3;
-    const parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(code)}.T?interval=1d&range=${full ? '10y' : '1mo'}`));
-    const bars = full ? dedupeDaily(parsed.bars) : mergeTail(base.bars, parsed.bars);
-    const v = { bars, meta: parsed.meta, fetchedAt: now, fullAt: full ? now : base.fullAt };
+    const parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=${full ? '10y' : '1mo'}`));
+    const daily = full ? dedupeDaily(parsed.bars) : mergeTail(base.bars, parsed.bars);
+    const v = { ...packBase(daily, base, full), meta: parsed.meta, fetchedAt: now, fullAt: full ? now : base.fullAt };
     await putStored(code, 'base', v);
     return v;
   }));
@@ -345,7 +387,7 @@ function refreshIntraday(code, prio) {
   return once(keyOf(code, '5m'), () => schedule(prio, async () => {
     const now = Date.now();
     const bars = cfg.demo ? demoIntraday(code)
-      : parseChart(await fetchYahoo(`/v8/finance/chart/${enc(code)}.T?interval=5m&range=5d`)).bars;
+      : parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=5m&range=5d`)).bars;
     const v = { bars, meta: {}, fetchedAt: now };
     await putStored(code, '5m', v);
     return v;
@@ -363,15 +405,25 @@ export async function cachedSet(code, tfs) {
 
 // 必要なデータを最新化する。キャッシュが有効なら通信しない。
 // maxAgeMs を指定すると「その時間より新しければ取得しない」（裏での先回り取得用）
+// 失敗が続く銘柄（上場廃止・コード違いなど）は、間隔を空けてから再挑戦する
+const failures = new Map(); // code -> { n, until }
+export function failureOf(code) { return failures.get(code) || null; }
+
 export async function loadSet(code, tfs, { force = false, onEntry = null, prio = PRIO.show, maxAgeMs = null } = {}) {
   const entries = await cachedSet(code, tfs);
   let fetched = false, error = null;
   const kinds = [...new Set(tfs.map(kindOf))];
+  const market = mkt(code);
+  const f = failures.get(code);
+  // 表示中の銘柄は最短1分、裏の取得は 2,4,8…最大30分 空ける
+  if (f && !force && Date.now() < (prio === PRIO.show ? Math.min(f.until, f.at + 60e3) : f.until)) {
+    return { entries, fetched, error: f.error, skipped: true };
+  }
   for (const kind of kinds) {
     const cur = await getStored(code, kind);
-    const fresh = maxAgeMs != null && marketPhase().open
+    const fresh = maxAgeMs != null && marketPhase(Date.now(), market).open
       ? cur && Date.now() - cur.fetchedAt < maxAgeMs
-      : cur && isFresh(cur.fetchedAt, cfg.ttlMs);
+      : cur && isFresh(cur.fetchedAt, cfg.ttlMs, Date.now(), market);
     if (!force && fresh) continue;
     try {
       const v = kind === 'base' ? await refreshBase(code, prio) : await refreshIntraday(code, prio);
@@ -381,6 +433,12 @@ export async function loadSet(code, tfs, { force = false, onEntry = null, prio =
     } catch (e) {
       error = e;
     }
+  }
+  if (error) {
+    const n = (failures.get(code)?.n || 0) + 1;
+    failures.set(code, { n, at: Date.now(), until: Date.now() + Math.min(30, 2 ** n) * 60e3, error });
+  } else if (fetched) {
+    failures.delete(code);
   }
   return { entries, fetched, error };
 }
@@ -409,6 +467,10 @@ export async function searchRemote(q) {
     throw last || new Error('検索失敗');
   });
   return (json.quotes || [])
-    .filter((x) => typeof x.symbol === 'string' && x.symbol.endsWith('.T'))
-    .map((x) => ({ code: x.symbol.slice(0, -2), name: x.shortname || x.longname || '', source: 'Yahoo' }));
+    .filter((x) => typeof x.symbol === 'string' && /^(EQUITY|ETF)$/.test(x.quoteType || '')
+      && (x.symbol.endsWith('.T') || /^[A-Z][A-Z0-9]{0,5}(-[A-Z])?$/.test(x.symbol)))
+    .map((x) => {
+      const jp = x.symbol.endsWith('.T');
+      return { code: jp ? x.symbol.slice(0, -2) : x.symbol, name: x.shortname || x.longname || '', market: jp ? '東証' : '米国' };
+    });
 }

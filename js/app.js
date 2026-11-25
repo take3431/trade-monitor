@@ -1,9 +1,9 @@
 import * as M from './market.js';
 import * as D from './data.js';
 import { Stage, themeColors } from './chart.js';
-import { lookupName, searchLocal } from './names.js';
+import { lookupName, searchLocal, loadDict, isUS, JP_RE, US_RE } from './names.js';
 
-const MAX_SYMBOLS = 120;
+const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
 const TOUCH_HOLD_MS = 10000;   // 画面操作後、自動巡回を止めておく時間
 const NAV_FETCH_DELAY = 350;   // 前/次の連打対策：表示が落ち着いてから通信する
@@ -12,15 +12,17 @@ const DEFAULTS = {
   interval: 30, offHours: 'continue',
   leftTf: '1d', rightTf: '1mo', leftBars: 126, rightBars: 120,
   ind: { ma: true, bb: false, vol: true },
-  theme: 'dark', colorMode: 'jp', font: 'm', wakeLock: true,
-  cacheMin: 2, prefetchSec: 25,
-  proxy: '', fallback: true, demo: false,
+  theme: 'dark', colorMode: 'jp', font: 'm',
 };
+// 画面に出さない固定値
+const CACHE_MIN = 2;      // 場中のキャッシュ有効時間（分）
+const PREFETCH_SEC = 30;  // 次の銘柄を何秒前に取得するか
+const DEMO = new URLSearchParams(location.search).has('demo'); // 動作確認用（URL に ?demo を付けたときだけ）
 const DEFAULT_LIST = [
   ['7203', 'トヨタ自動車', true], ['9984', 'ソフトバンクグループ', true], ['6758', 'ソニーグループ', true],
   ['8306', '三菱UFJフィナンシャル・グループ', true], ['6861', 'キーエンス', true], ['8035', '東京エレクトロン', true],
   ['9983', 'ファーストリテイリング', false], ['7974', '任天堂', false],
-].map(([code, name, enabled]) => ({ code, name, market: '東証プライム', enabled }));
+].map(([code, name, enabled]) => ({ code, name, enabled }));
 
 const $ = (id) => document.getElementById(id);
 const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
@@ -31,9 +33,8 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 /* ---------------- 状態 ---------------- */
 const storedSettings = load(KEY.settings, {});
 const settings = { ...DEFAULTS, ...storedSettings, ind: { ...DEFAULTS.ind, ...(storedSettings.ind || {}) } };
-// 旧版で保存された公開プロキシ（現在は使えない）は消去
-if (/corsproxy\.io|allorigins\.win|codetabs\.com/.test(settings.proxy || '')) settings.proxy = '';
-if (settings.prefetchSec < 20) settings.prefetchSec = 25;
+// 旧版の設定項目は使わない
+for (const k of ['proxy', 'fallback', 'demo', 'cacheMin', 'prefetchSec', 'wakeLock']) delete settings[k];
 let list = load(KEY.list, null) || DEFAULT_LIST;
 const saved = load(KEY.state, {});
 const st = {
@@ -46,7 +47,6 @@ let front = 0;
 const persistState = () => save(KEY.state, { code: st.code, paused: st.paused });
 const saveList = () => save(KEY.list, list);
 const neededTfs = () => [...new Set([settings.leftTf, settings.rightTf])];
-const ttlMs = () => settings.cacheMin * 60e3;
 
 /* ---------------- 設定の反映 ---------------- */
 function applyLook() {
@@ -55,10 +55,10 @@ function applyLook() {
   r.dataset.font = settings.font;
   r.dataset.color = settings.colorMode;
   document.querySelector('meta[name=theme-color]').content = settings.theme === 'dark' ? '#0d1117' : '#f4f6f9';
-  $('demoBadge').hidden = !settings.demo;
+  $('demoBadge').hidden = !DEMO;
 }
 function applyData() {
-  D.configure({ proxy: settings.proxy, fallback: settings.fallback, demo: settings.demo, ttlMs: ttlMs() });
+  D.configure({ demo: DEMO, ttlMs: CACHE_MIN * 60e3 });
 }
 function rebuildCharts() {
   const c = themeColors();
@@ -78,6 +78,8 @@ function neighbor(delta) {
   return null;
 }
 function enabledCount() { return list.filter((x) => x.enabled).length; }
+const marketOf = (code) => (isUS(code) ? 'US' : 'JP');
+function marketsInList() { return [...new Set(list.filter((x) => x.enabled).map((x) => marketOf(x.code)))]; }
 function posText(code) {
   const en = list.filter((x) => x.enabled);
   const i = en.findIndex((x) => x.code === code);
@@ -175,7 +177,7 @@ function pauseReason(now) {
   if (st.settingsOpen) return '設定中';
   if (st.paused) return '一時停止中';
   if (now < st.touchUntil) return '操作中のため一時停止';
-  if (!M.marketPhase(now).open && settings.offHours === 'stop') return '市場時間外のため停止';
+  if (settings.offHours === 'stop' && !marketsInList().some((m) => M.marketPhase(now, m).open)) return '市場時間外のため停止';
   if (document.hidden) return '待機中';
   return null;
 }
@@ -186,7 +188,7 @@ function tick() {
   warmTick(now);
   if (!pauseReason(now) && enabledCount() > 0) {
     st.remaining--;
-    const lead = Math.min(settings.prefetchSec, settings.interval - 2);
+    const lead = Math.min(PREFETCH_SEC, settings.interval - 2);
     if (st.remaining === lead) prefetch(neighbor(1));
     if (st.remaining <= 0) go(1, false);
   }
@@ -199,22 +201,28 @@ function tick() {
 const WARM_EVERY_MS = 8000;
 const WARM_MAX_AGE = 15 * 60e3;
 let warmAt = 0, warmBusy = false, warmCursor = 0;
+const haveData = new Set(); // データ取得済みと確認できた銘柄（毎回の確認を省くため）
 async function warmTick(now) {
   if (warmBusy || st.settingsOpen || document.hidden || now - warmAt < WARM_EVERY_MS || !D.isIdle()) return;
   warmAt = now;
-  const en = list.filter((x) => x.enabled);
+  const tfs = neededTfs();
+  const ok = (code) => { const f = D.failureOf(code); return !f || now > f.until; };
+  const en = list.filter((x) => x.enabled && ok(x.code));
   if (!en.length) return;
   warmBusy = true;
   try {
-    const tfs = neededTfs();
-    // 未取得の銘柄を先に
-    let target = null;
+    // 未取得の銘柄を先に（1回に最大20件だけ確認）
+    let target = null, checked = 0;
     for (const x of en) {
+      if (haveData.has(x.code)) continue;
+      if (++checked > 20) break;
       const c = await D.cachedSet(x.code, tfs);
-      if (tfs.some((tf) => !c[tf]?.bars?.length)) { target = x.code; break; }
+      if (tfs.every((tf) => c[tf]?.bars?.length)) haveData.add(x.code);
+      else { target = x.code; break; }
     }
     if (!target) target = en[warmCursor++ % en.length].code;
     const r = await D.loadSet(target, tfs, { prio: D.PRIO.warm, maxAgeMs: WARM_MAX_AGE });
+    if (r.fetched && !r.error) haveData.add(target);
     if (r.fetched && !r.error && st.lastError && target === st.code) st.lastError = null;
   } catch { /* 次回再試行 */ } finally {
     warmBusy = false;
@@ -226,11 +234,12 @@ let loading = false;
 function setLoading(v) { loading = v; updateStatus(); }
 
 function updateStatus(now = Date.now()) {
-  const ph = M.marketPhase(now);
+  const m = st.code ? marketOf(st.code) : 'JP';
+  const ph = M.marketPhase(now, m);
   const dot = $('statusDot');
   const err = st.lastError;
   dot.className = `dot ${err ? 'err' : ph.open ? 'ok' : 'closed'}${loading ? ' busy' : ''}`;
-  $('statusText').textContent = `東証・${ph.open ? `接続中（${ph.label}）` : ph.label}`;
+  $('statusText').textContent = `${m === 'US' ? '米国' : '東証'}・${ph.open ? `接続中（${ph.label}）` : ph.label}`;
   const e = stages[front].entries?.[settings.leftTf] || stages[front].entries?.[settings.rightTf];
   $('updatedAt').textContent = e?.fetchedAt ? `${M.fmtStamp(e.fetchedAt, now)} 更新` : '';
   const errEl = $('errText');
@@ -261,7 +270,7 @@ function toast(msg) {
 /* ---------------- 画面スリープ防止 ---------------- */
 let wake = null;
 async function keepAwake() {
-  if (!settings.wakeLock || !('wakeLock' in navigator) || document.hidden || wake) return;
+  if (!('wakeLock' in navigator) || document.hidden || wake) return;
   try {
     wake = await navigator.wakeLock.request('screen');
     wake.addEventListener('release', () => { wake = null; });
@@ -279,13 +288,13 @@ function openSettings() {
 }
 
 function closeSettings() {
-  const prev = JSON.stringify({ tf: [settings.leftTf, settings.rightTf, settings.leftBars, settings.rightBars], ind: settings.ind, t: settings.theme, c: settings.colorMode, d: settings.demo, f: settings.font });
+  const prev = JSON.stringify({ tf: [settings.leftTf, settings.rightTf, settings.leftBars, settings.rightBars], ind: settings.ind, t: settings.theme, c: settings.colorMode, f: settings.font });
   readSettings();
   save(KEY.settings, settings);
   saveList();
   applyLook();
   applyData();
-  const next = JSON.stringify({ tf: [settings.leftTf, settings.rightTf, settings.leftBars, settings.rightBars], ind: settings.ind, t: settings.theme, c: settings.colorMode, d: settings.demo, f: settings.font });
+  const next = JSON.stringify({ tf: [settings.leftTf, settings.rightTf, settings.leftBars, settings.rightBars], ind: settings.ind, t: settings.theme, c: settings.colorMode, f: settings.font });
   st.settingsOpen = false;
   document.body.classList.remove('in-settings');
   $('settings').hidden = true;
@@ -294,7 +303,7 @@ function closeSettings() {
   const cur = list.find((x) => x.code === st.code);
   const code = cur ? cur.code : neighbor(1);
   if (code) { stages[front].code = prev !== next ? null : stages[front].code; show(code); } else showEmpty(true);
-  if (settings.wakeLock) keepAwake(); else if (wake) wake.release();
+  keepAwake();
   renderCountdown();
 }
 
@@ -322,7 +331,7 @@ function periodOptions(selId, tf, value) {
 
 function fillSettings() {
   const s = settings;
-  const isPreset = [30, 60, 90].includes(s.interval);
+  const isPreset = [20, 30, 60, 90].includes(s.interval);
   seg('segInterval', isPreset ? s.interval : 'custom', (v) => {
     if (v === 'custom') { $('inpInterval').focus(); return; }
     $('inpInterval').value = v;
@@ -330,7 +339,7 @@ function fillSettings() {
   $('inpInterval').value = s.interval;
   $('inpInterval').oninput = () => {
     const v = $('inpInterval').value;
-    $('segInterval').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (['30', '60', '90'].includes(v) ? v : 'custom')));
+    $('segInterval').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === (['20', '30', '60', '90'].includes(v) ? v : 'custom')));
   };
   $('selOffHours').value = s.offHours;
   tfButtons('segLeftTf'); tfButtons('segRightTf');
@@ -346,13 +355,6 @@ function fillSettings() {
   $('segColor').dataset.v = s.colorMode;
   seg('segFont', s.font, (v) => { $('segFont').dataset.v = v; document.documentElement.dataset.font = v; });
   $('segFont').dataset.v = s.font;
-  $('chkWake').checked = s.wakeLock;
-  seg('segCache', s.cacheMin, (v) => { $('segCache').dataset.v = v; });
-  $('segCache').dataset.v = s.cacheMin;
-  $('inpPrefetch').value = s.prefetchSec;
-  $('inpProxy').value = s.proxy;
-  $('chkFallback').checked = s.fallback;
-  $('chkDemo').checked = s.demo;
 }
 
 function readSettings() {
@@ -365,12 +367,6 @@ function readSettings() {
   s.ind = { ma: $('chkMa').checked, bb: $('chkBb').checked, vol: $('chkVol').checked };
   s.theme = $('chkDark').checked ? 'dark' : 'light';
   s.colorMode = $('segColor').dataset.v; s.font = $('segFont').dataset.v;
-  s.wakeLock = $('chkWake').checked;
-  s.cacheMin = clamp($('segCache').dataset.v, 1, 3, 2);
-  s.prefetchSec = clamp($('inpPrefetch').value, 5, 60, 15);
-  s.proxy = $('inpProxy').value.trim();
-  s.fallback = $('chkFallback').checked;
-  s.demo = $('chkDemo').checked;
 }
 
 /* ---------------- 銘柄一覧 ---------------- */
@@ -378,8 +374,8 @@ function renderList() {
   $('listCount').textContent = `(${list.length}/${MAX_SYMBOLS})`;
   $('listBody').innerHTML = list.map((x, i) => `
     <tr data-code="${esc(x.code)}">
-      <td class="c-no"><span class="grip" title="ドラッグで並び替え"><svg class="ico"><use href="#i-grip"/></svg></span><span class="no">${String(i + 1).padStart(2, '0')}</span></td>
-      <td class="c-code num">${esc(x.code)}</td>
+      <td class="c-no"><span class="grip" title="ドラッグで並び替え"><svg class="ico"><use href="#i-grip"/></svg></span><span class="no">${String(i + 1).padStart(3, '0')}</span></td>
+      <td class="c-code num">${esc(x.code)}${isUS(x.code) ? '<span class="tag">米</span>' : ''}</td>
       <td class="c-name"><button class="link rename">${esc(x.name || '（名称未設定）')}</button></td>
       <td class="c-sw"><label class="switch"><input type="checkbox" class="toggle" ${x.enabled ? 'checked' : ''}><i></i></label></td>
       <td class="c-del"><button class="icon-btn danger del" aria-label="削除"><svg class="ico"><use href="#i-trash"/></svg></button></td>
@@ -388,7 +384,7 @@ function renderList() {
 }
 
 function renumber() {
-  $('listBody').querySelectorAll('tr').forEach((tr, i) => { tr.querySelector('.no').textContent = String(i + 1).padStart(2, '0'); });
+  $('listBody').querySelectorAll('tr').forEach((tr, i) => { tr.querySelector('.no').textContent = String(i + 1).padStart(3, '0'); });
 }
 
 $('listBody').addEventListener('change', (e) => {
@@ -418,52 +414,104 @@ $('listBody').addEventListener('click', (e) => {
   }
 });
 
-// ドラッグ＆ドロップ並び替え（タッチ対応のため Pointer Events で実装）
+// ドラッグ＆ドロップ並び替え（スマホのリスト操作と同じ動き）
+//  つまむと行が浮き上がり指に付いてくる。他の行は滑らかによけ、離すと元の場所へ収まる。
 (function setupDrag() {
   const body = $('listBody');
   const wrap = $('tableWrap');
-  let drag = null;
-  let scrollTimer = null;
+  let d = null;
+
+  const rowsTop = () => new Map([...body.children].map((r) => [r, r.getBoundingClientRect().top]));
+  function animateShift(before) {
+    for (const row of body.children) {
+      if (row === d.ph) continue;
+      const old = before.get(row);
+      const dy = old - row.getBoundingClientRect().top;
+      if (!dy) continue;
+      row.style.transition = 'none';
+      row.style.transform = `translateY(${dy}px)`;
+      requestAnimationFrame(() => {
+        row.style.transition = 'transform .18s ease';
+        row.style.transform = '';
+      });
+    }
+  }
+
   body.addEventListener('pointerdown', (e) => {
     const g = e.target.closest('.grip');
-    if (!g) return;
+    if (!g || d) return;
     e.preventDefault();
     const tr = g.closest('tr');
-    drag = { tr, id: e.pointerId, y: e.clientY };
-    tr.classList.add('dragging');
+    const rect = tr.getBoundingClientRect();
+    // 浮かせる行（コピー）を作る。列幅は元の行に合わせる
+    const ghost = document.createElement('table');
+    ghost.className = 'list drag-ghost';
+    const clone = tr.cloneNode(true);
+    [...clone.children].forEach((td, i) => { td.style.width = `${tr.children[i].getBoundingClientRect().width}px`; });
+    ghost.appendChild(document.createElement('tbody')).appendChild(clone);
+    Object.assign(ghost.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px` });
+    document.body.appendChild(ghost);
+    requestAnimationFrame(() => ghost.classList.add('lifted'));
+    tr.classList.add('drag-placeholder');
+    d = { ph: tr, ghost, id: e.pointerId, y0: e.clientY, top0: rect.top, y: e.clientY, h: rect.height };
     g.setPointerCapture(e.pointerId);
-    scrollTimer = setInterval(() => {
-      if (!drag) return;
-      const r = wrap.getBoundingClientRect();
-      if (drag.y < r.top + 50) wrap.scrollTop -= 12;
-      else if (drag.y > r.bottom - 40) wrap.scrollTop += 12;
-      moveTo(drag.y);
-    }, 30);
+    d.timer = setInterval(autoScroll, 30);
   });
-  function moveTo(y) {
-    const rows = [...body.querySelectorAll('tr')];
-    for (const row of rows) {
-      if (row === drag.tr) continue;
+
+  function autoScroll() {
+    if (!d) return;
+    const r = wrap.getBoundingClientRect();
+    let v = 0;
+    if (d.y < r.top + 60) v = -Math.ceil((r.top + 60 - d.y) / 5);
+    else if (d.y > r.bottom - 60) v = Math.ceil((d.y - (r.bottom - 60)) / 5);
+    if (v) { wrap.scrollTop += v; reorder(); }
+  }
+
+  function reorder() {
+    const y = d.y;
+    const before = rowsTop();
+    for (const row of body.children) {
+      if (row === d.ph) continue;
       const r = row.getBoundingClientRect();
       if (y > r.top && y < r.bottom) {
-        if (y < r.top + r.height / 2) row.before(drag.tr); else row.after(drag.tr);
-        renumber();
+        const after = y > r.top + r.height / 2;
+        const target = after ? row.nextSibling : row;
+        if (target !== d.ph && target !== d.ph.nextSibling) {
+          body.insertBefore(d.ph, target);
+          animateShift(before);
+          renumber();
+          d.ghost.querySelector('.no').textContent = d.ph.querySelector('.no').textContent;
+        }
         break;
       }
     }
   }
+
   body.addEventListener('pointermove', (e) => {
-    if (!drag || e.pointerId !== drag.id) return;
-    drag.y = e.clientY;
-    moveTo(e.clientY);
+    if (!d || e.pointerId !== d.id) return;
+    d.y = e.clientY;
+    d.ghost.style.top = `${d.top0 + (e.clientY - d.y0)}px`;
+    reorder();
   });
+
   const end = (e) => {
-    if (!drag || e.pointerId !== drag.id) return;
-    drag.tr.classList.remove('dragging');
-    clearInterval(scrollTimer);
-    drag = null;
-    const order = [...body.querySelectorAll('tr')].map((r) => r.dataset.code);
-    list.sort((a, b) => order.indexOf(a.code) - order.indexOf(b.code));
+    if (!d || e.pointerId !== d.id) return;
+    const { ph, ghost, timer } = d;
+    clearInterval(timer);
+    d = null;
+    // 収まる位置へ戻すアニメーション
+    const to = ph.getBoundingClientRect();
+    ghost.classList.add('dropping');
+    ghost.classList.remove('lifted');
+    ghost.style.top = `${to.top}px`;
+    ghost.style.left = `${to.left}px`;
+    setTimeout(() => {
+      ghost.remove();
+      ph.classList.remove('drag-placeholder');
+    }, 180);
+    const order = [...body.children].map((r) => r.dataset.code);
+    const pos = new Map(order.map((c, i) => [c, i]));
+    list.sort((a, b) => pos.get(a.code) - pos.get(b.code));
     saveList();
   };
   body.addEventListener('pointerup', end);
@@ -472,66 +520,80 @@ $('listBody').addEventListener('click', (e) => {
 
 /* ---------------- 新規登録ダイアログ ---------------- */
 const dlg = $('addDialog');
-const CODE_RE = /^[0-9][0-9A-Z]{3}$/;
+const normCode = (v) => {
+  const c = String(v || '').trim().normalize('NFKC').toUpperCase().replace(/\.T$/, '').replace(/\./g, '-');
+  return c;
+};
+const validCode = (c) => JP_RE.test(c) || US_RE.test(c);
+function setMarketLabel(code) {
+  $('addMarketLabel').value = !code ? '' : isUS(code) ? '米国株' : JP_RE.test(code) ? '日本株（東証）' : '';
+}
 
 $('btnAdd').addEventListener('click', () => {
   $('addQuery').value = ''; $('addCode').value = ''; $('addName').value = '';
-  $('addMarket').value = '東証プライム';
+  setMarketLabel('');
   $('addResults').innerHTML = ''; $('addMsg').textContent = '';
+  loadDict();
   dlg.showModal();
   setTimeout(() => $('addQuery').focus(), 50);
 });
 $('btnAddCancel').addEventListener('click', () => dlg.close());
+$('addCode').addEventListener('input', () => {
+  const c = normCode($('addCode').value);
+  setMarketLabel(c);
+  const n = lookupName(c);
+  if (n) $('addName').value = n;
+});
 
 function pickResult(r) {
   $('addCode').value = r.code;
+  setMarketLabel(r.code);
   $('addName').value = lookupName(r.code) || r.name;
   $('addResults').innerHTML = '';
   $('addMsg').textContent = '';
 }
 
+let searchSeq = 0;
 async function doSearch() {
-  const q = $('addQuery').value.trim().normalize('NFKC').toUpperCase();
+  const raw = $('addQuery').value.trim();
   const msg = $('addMsg');
   const ul = $('addResults');
+  const seq = ++searchSeq;
   ul.innerHTML = '';
-  if (!q) return;
-  if (CODE_RE.test(q)) {
-    $('addCode').value = q;
-    $('addName').value = lookupName(q);
-    msg.textContent = '銘柄情報を確認中…';
-    const r = await D.loadSet(q, ['1d']);
-    const qt = D.quoteFrom(r.entries['1d']);
-    if (qt) {
-      if (!$('addName').value) $('addName').value = qt.name;
-      msg.textContent = '確認OK：チャートデータを取得できました';
-    } else {
-      msg.textContent = r.error ? `確認できませんでした（${r.error.message}）。このまま登録もできます。` : '該当データがありません';
-    }
-    return;
+  if (!raw) return;
+  await loadDict();
+  const asCode = normCode(raw);
+  let results = await searchLocal(raw);
+  // 辞書に無いもの（新規上場・米国の個別株など）は Yahoo でも検索
+  if (results.length < 5 || /^[A-Za-z]/.test(raw)) {
+    msg.textContent = '検索中…';
+    try {
+      const remote = await D.searchRemote(raw);
+      for (const x of remote) {
+        if (!results.some((y) => y.code === x.code)) results.push({ ...x, name: lookupName(x.code) || x.name });
+      }
+    } catch { /* 辞書の結果だけ使う */ }
   }
-  let results = searchLocal($('addQuery').value.trim());
-  msg.textContent = '検索中…';
-  try {
-    const remote = await D.searchRemote($('addQuery').value.trim());
-    for (const r of remote) if (!results.some((x) => x.code === r.code)) results.push(r);
-  } catch { /* 辞書の結果のみ */ }
-  results = results.slice(0, 12);
-  msg.textContent = results.length ? '候補をタップしてください' : '見つかりませんでした。銘柄コード（4桁）で入力してください。';
-  ul.innerHTML = results.map((r, i) => `<li><button type="button" data-i="${i}"><span class="num">${esc(r.code)}</span> ${esc(lookupName(r.code) || r.name)} <small class="muted">${r.source}</small></button></li>`).join('');
+  if (seq !== searchSeq) return;
+  results = results.slice(0, 30);
+  if (!results.length && validCode(asCode)) results = [{ code: asCode, name: lookupName(asCode), market: isUS(asCode) ? '米国' : '東証' }];
+  msg.textContent = results.length ? '候補をタップしてください' : '見つかりませんでした。銘柄コード（例: 7203）またはティッカー（例: AAPL）で入力してください。';
+  ul.innerHTML = results.map((x, i) => `<li><button type="button" data-i="${i}"><span class="num code">${esc(x.code)}</span><span class="nm">${esc(x.name || '（名称不明）')}</span><small class="muted">${esc(x.market || '')}</small></button></li>`).join('');
   ul.querySelectorAll('button').forEach((b) => { b.onclick = () => pickResult(results[Number(b.dataset.i)]); });
 }
 $('btnSearch').addEventListener('click', doSearch);
-$('addQuery').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
+let searchTimer = null;
+$('addQuery').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(doSearch, 350); });
+$('addQuery').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(searchTimer); doSearch(); } });
 
 $('addForm').addEventListener('submit', (e) => {
   e.preventDefault();
-  const code = $('addCode').value.trim().normalize('NFKC').toUpperCase();
+  const code = normCode($('addCode').value);
   const msg = $('addMsg');
-  if (!CODE_RE.test(code)) { msg.textContent = '銘柄コードは4桁で入力してください（例: 7203, 130A）'; return; }
+  if (!validCode(code)) { msg.textContent = '日本株は4桁のコード（例: 7203, 130A）、米国株はティッカー（例: AAPL）を入力してください'; return; }
   if (list.some((x) => x.code === code)) { msg.textContent = 'すでに登録されています'; return; }
   if (list.length >= MAX_SYMBOLS) { msg.textContent = `登録できるのは最大${MAX_SYMBOLS}銘柄です`; return; }
-  list.push({ code, name: $('addName').value.trim() || lookupName(code) || '', market: $('addMarket').value, enabled: true });
+  list.push({ code, name: $('addName').value.trim() || lookupName(code) || '', enabled: true });
   saveList();
   renderList();
   dlg.close();
@@ -550,12 +612,6 @@ $('btnSave').addEventListener('click', closeSettings);
 $('btnPause').addEventListener('click', () => { st.paused = !st.paused; persistState(); renderCountdown(); });
 $('btnPrev').addEventListener('click', () => go(-1));
 $('btnNext').addEventListener('click', () => go(1));
-$('btnClearCache').addEventListener('click', async () => {
-  if (!confirm('保存済みの株価・チャートデータを消去しますか？\n（銘柄リストと設定は残ります）')) return;
-  await D.clearCache();
-  renderList();
-  toast('キャッシュを消去しました');
-});
 
 // チャート操作中は自動巡回を一時停止
 const holdTouch = () => { st.touchUntil = Date.now() + TOUCH_HOLD_MS; renderCountdown(); };
@@ -578,6 +634,11 @@ document.addEventListener('visibilitychange', () => {
 });
 
 /* ---------------- 起動 ---------------- */
+loadDict().then(() => {
+  let changed = false;
+  for (const x of list) if (!x.name) { const n = lookupName(x.code); if (n) { x.name = n; changed = true; } }
+  if (changed) saveList();
+});
 applyLook();
 applyData();
 rebuildCharts();

@@ -37,6 +37,7 @@
     <span class="dot" id="statusDot"></span>
     <span id="statusText">東証</span>
     <span id="updatedAt" class="muted"></span>
+    
     <span id="errText" class="err" hidden></span>
     <span id="demoBadge" class="badge" hidden>デモデータ</span>
   </div>
@@ -93,7 +94,7 @@
       <section>
         <h3>自動表示切替設定 (秒数)</h3>
         <div class="seg" id="segInterval">
-          <button data-v="30">30s</button><button data-v="60">60s</button><button data-v="90">90s</button><button data-v="custom">カスタム</button>
+          <button data-v="20">20s</button><button data-v="30">30s</button><button data-v="60">60s</button><button data-v="90">90s</button><button data-v="custom">カスタム</button>
         </div>
         <label class="row">切り替え間隔 (10〜300秒)<input type="number" id="inpInterval" min="10" max="300" step="1" inputmode="numeric"></label>
         <label class="row">市場時間外の自動巡回
@@ -120,19 +121,9 @@
         <label class="row">ダークモード<span class="switch"><input type="checkbox" id="chkDark"><i></i></span></label>
         <div class="row">騰落カラー<div class="seg sm" id="segColor"><button data-v="jp">上昇=赤</button><button data-v="us">上昇=緑</button></div></div>
         <div class="row">文字サイズ<div class="seg sm" id="segFont"><button data-v="l">大</button><button data-v="m">中</button><button data-v="s">小</button></div></div>
-        <label class="row">画面スリープ防止<span class="switch"><input type="checkbox" id="chkWake"><i></i></span></label>
       </section>
 
-      <section>
-        <h3>データ取得設定</h3>
-        <div class="row">キャッシュ有効時間<div class="seg sm" id="segCache"><button data-v="1">1分</button><button data-v="2">2分</button><button data-v="3">3分</button></div></div>
-        <label class="row">事前取得 (切替の何秒前)<input type="number" id="inpPrefetch" min="5" max="60" inputmode="numeric"></label>
-        <label class="col">独自プロキシURL（任意・通常は空欄）<input type="url" id="inpProxy" placeholder="https://xxxx.workers.dev/?url={url}" autocomplete="off" spellcheck="false"></label>
-        <label class="row">内蔵の中継経路も使う<span class="switch"><input type="checkbox" id="chkFallback"><i></i></span></label>
-        <label class="row">デモデータで表示<span class="switch"><input type="checkbox" id="chkDemo"><i></i></span></label>
-        <div class="row"><span class="muted small">保存済みのチャートデータを消去</span><button class="btn sm danger" id="btnClearCache">キャッシュ消去</button></div>
-      </section>
-      <p class="muted small attribution">Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a> Lightweight Charts™ ／ データ: Yahoo Finance（約20分遅延）</p>
+      <p class="muted small attribution">Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a></p>
     </div>
     <button class="btn primary block" id="btnSave">設定を保存して戻る</button>
   </aside>
@@ -143,16 +134,14 @@
     <h3>銘柄の新規登録</h3>
     <label class="col">銘柄コード または 銘柄名
       <div class="inline">
-        <input id="addQuery" placeholder="例: 7203 / トヨタ" autocomplete="off">
+        <input id="addQuery" placeholder="例: 7203 / とよた / AAPL / アップル" autocomplete="off">
         <button type="button" class="btn" id="btnSearch">検索</button>
       </div>
     </label>
     <ul id="addResults" class="results"></ul>
     <div class="grid2">
-      <label class="col">銘柄コード<input id="addCode" maxlength="4" autocomplete="off" placeholder="7203"></label>
-      <label class="col">市場
-        <select id="addMarket"><option>東証プライム</option><option>東証スタンダード</option><option>東証グロース</option><option>東証</option></select>
-      </label>
+      <label class="col">銘柄コード／ティッカー<input id="addCode" maxlength="8" autocomplete="off" autocapitalize="characters" placeholder="7203 / AAPL"></label>
+      <label class="col">市場<input id="addMarketLabel" readonly tabindex="-1" placeholder="自動判定"></label>
     </div>
     <label class="col">表示名<input id="addName" autocomplete="off" placeholder="トヨタ自動車"></label>
     <p id="addMsg" class="msg"></p>

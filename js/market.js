@@ -75,7 +75,8 @@ export function isTradingDay(y, m, d) {
   return !HOLIDAYS.has(`${y}-${pad(m)}-${pad(d)}`);
 }
 
-export function marketPhase(now = Date.now()) {
+export function marketPhase(now = Date.now(), market = 'JP') {
+  if (market === 'US') return usPhase(now);
   const p = jst(now);
   if (!isTradingDay(p.y, p.m, p.d)) return { open: false, code: 'holiday', label: '休場日' };
   if (p.min < AM[0]) return { open: false, code: 'pre', label: '取引開始前' };
@@ -104,13 +105,46 @@ export function lastSessionEnd(now = Date.now()) {
 // キャッシュが有効か判定。
 // 取引時間中: 取得から ttlMs 以内なら有効。
 // 時間外: 直近の引け（＋遅延分）以降に取得済みなら価格は変わらないので有効（再取得しない）。
-export function isFresh(fetchedAt, ttlMs, now = Date.now()) {
+export function isFresh(fetchedAt, ttlMs, now = Date.now(), market = 'JP') {
   if (!fetchedAt) return false;
-  if (!marketPhase(now).open) {
-    const settle = lastSessionEnd(now) + SETTLE_MS;
+  if (!marketPhase(now, market).open) {
+    const end = market === 'US' ? usLastClose(now) : lastSessionEnd(now);
+    const settle = end + (market === 'US' ? US_SETTLE_MS : SETTLE_MS);
     if (now >= settle) return fetchedAt >= settle;
   }
   return now - fetchedAt < ttlMs;
+}
+
+/* ---------------- 米国市場（NYSE / NASDAQ） ----------------
+   通常取引 9:30〜16:00（米国東部時間）。夏時間は端末の Intl で自動判定。
+   米国の祝日は判定していない（祝日は場中扱いになるが、データは変わらないので表示に影響はない）。 */
+const US_SETTLE_MS = 5 * MIN;
+const etFmt = typeof Intl !== 'undefined'
+  ? new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour12: false, weekday: 'short', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric' })
+  : null;
+function et(t) {
+  const o = {};
+  for (const x of etFmt.formatToParts(new Date(t))) o[x.type] = x.value;
+  const dow = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(o.weekday);
+  return { dow, min: (Number(o.hour) % 24) * 60 + Number(o.minute) };
+}
+function usPhase(now) {
+  const p = et(now);
+  if (p.dow === 0 || p.dow === 6) return { open: false, code: 'holiday', label: '休場日' };
+  if (p.min < 570) return { open: false, code: 'pre', label: '取引開始前' };
+  if (p.min < 960) return { open: true, code: 'open', label: '取引中' };
+  return { open: false, code: 'closed', label: '閉場中' };
+}
+// 直近の引け（16:00 ET）。1分刻みでさかのぼると重いので、日単位で探す
+function usLastClose(now) {
+  for (let i = 0; i < 10; i++) {
+    const day = now - i * 24 * H;
+    const p = et(day);
+    if (p.dow === 0 || p.dow === 6) continue;
+    const close = day - (p.min - 960) * MIN;
+    if (close <= now) return Math.floor(close / MIN) * MIN;
+  }
+  return 0;
 }
 
 export function fmtClock(t) {

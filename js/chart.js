@@ -140,7 +140,7 @@ class Pane {
     const raw = entry?.bars || [];
     const bars = raw.map((b) => ({ time: b[0] + JST, open: b[1], high: b[2], low: b[3], close: b[4], volume: b[5] }));
     this.bars = bars;
-    this.label = `${label}, ${t.short}, TSE`;
+    this.label = `${label}, ${t.short}, ${this.exch || 'TSE'}`;
     this.maLen = t.ma;
     this.msg.hidden = bars.length > 0;
     this.msg.textContent = loading ? 'チャートデータ読込中…' : 'チャートデータ未取得（自動で再取得します）';
@@ -198,8 +198,8 @@ const STAGE_HTML = `
   <section class="sym-head">
     <div class="sym-id">
       <div class="sym-title"><span class="sym-code"></span><span class="sym-name"></span></div>
-      <div class="sym-sub"><span class="sym-market"></span><span class="sym-pos"></span><span class="sym-time"></span></div>
     </div>
+    <div class="sym-meta"><div class="sym-pos"></div><div class="sym-time"></div></div>
   </section>
   <section class="charts">
     ${['L', 'R'].map((s) => `
@@ -216,7 +216,7 @@ export class Stage {
     root.innerHTML = STAGE_HTML;
     const $ = (s) => root.querySelector(s);
     this.el = {
-      code: $('.sym-code'), name: $('.sym-name'), market: $('.sym-market'), pos: $('.sym-pos'),
+      code: $('.sym-code'), name: $('.sym-name'), pos: $('.sym-pos'),
       time: $('.sym-time'),
     };
     this.panes = [...root.querySelectorAll('.chart-card')].map((c) => new Pane(c));
@@ -234,10 +234,13 @@ export class Stage {
     this.entries = entries;
     e.code.textContent = item.code;
     e.name.textContent = item.name || '';
-    e.market.textContent = `[${item.market || '東証'}]`;
     e.pos.textContent = pos;
+    // データの時刻：Yahoo が返す最終約定時刻（東証は約20分遅れ）。無ければ取得時刻から遅延分を引く
     const last = entries[settings.leftTf] || entries[settings.rightTf];
-    e.time.textContent = last?.fetchedAt ? `データ取得 ${fmtStamp(last.fetchedAt)}` : '';
+    const us = /^[A-Z]/.test(item.code);
+    const asOf = last?.meta?.time ? last.meta.time * 1000 : last?.fetchedAt ? last.fetchedAt - (us ? 0 : 20 * 60e3) : 0;
+    e.time.textContent = asOf ? `${fmtStamp(asOf)} 時点${us ? '（日本時間）' : ''}` : '';
+    this.panes.forEach((p) => { p.exch = us ? 'US' : 'TSE'; });
     const label = `${item.code} ${item.name || ''}`.trim();
     this.panes[0].setData(entries[settings.leftTf], settings.leftTf, label, settings.leftBars, keepRange, loading);
     this.panes[1].setData(entries[settings.rightTf], settings.rightTf, label, settings.rightBars, keepRange, loading);

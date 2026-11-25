@@ -98,12 +98,12 @@ body.in-settings .settings-only { display: flex; }
 .empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; font-size: 1.1rem; }
 
 .sym-head {
-  flex: none; display: grid; grid-template-columns: 1fr; align-items: center; gap: 1.5rem;
+  flex: none; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 1.5rem;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: .5rem 1.2rem;
 }
 .sym-title { display: flex; align-items: baseline; gap: .7rem; font-size: 1.85rem; font-weight: 700; line-height: 1.2; min-width: 0; }
 .sym-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sym-sub { display: flex; gap: 1rem; color: var(--muted); font-size: 1rem; margin-top: .15rem; }
+.sym-meta { text-align: right; color: var(--muted); font-size: .85rem; line-height: 1.5; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sym-pos { font-variant-numeric: tabular-nums; }
 .sym-price, .sym-chg { padding-left: 1.5rem; }
 .sym-chg { border-left: 1px solid var(--border); }
@@ -195,7 +195,8 @@ select { padding-right: 1.6rem; }
 .seg button { border: 0; background: var(--surface2); padding: .45rem .7rem; font-size: .85rem; border-right: 1px solid var(--border2); }
 .seg button:last-child { border-right: 0; }
 .seg button.on { background: color-mix(in srgb, var(--accent) 22%, var(--surface2)); color: var(--text); box-shadow: inset 0 0 0 1.5px var(--accent); }
-#segInterval { display: grid; grid-template-columns: repeat(4, 1fr); }
+#segInterval { display: grid; grid-template-columns: repeat(5, 1fr); }
+#segInterval button { padding-left: .2rem; padding-right: .2rem; }
 .seg.sm button { padding: .35rem .5rem; font-size: .78rem; }
 .checks { display: flex; flex-wrap: wrap; gap: .4rem .9rem; font-size: .82rem; }
 .checks label { display: inline-flex; align-items: center; gap: .3rem; }
@@ -243,3 +244,21 @@ dialog h3 { margin: 0 0 .6rem; }
   .sym-id { grid-column: 1 / -1; }
   .sym-price { padding-left: 0; }
 }
+
+/* ===== 並び替え（浮き上がり表示） ===== */
+.drag-ghost {
+  position: fixed; z-index: 100; margin: 0; pointer-events: none; border-collapse: collapse; table-layout: fixed;
+  background: var(--surface2); border-radius: 10px; overflow: hidden;
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.drag-ghost td { border-bottom: 0; background: var(--surface2); box-sizing: border-box; }
+.drag-ghost.lifted { transform: scale(1.03); box-shadow: 0 14px 34px rgba(0, 0, 0, .45), 0 0 0 1.5px var(--accent); }
+.drag-ghost.dropping { transition: top .18s ease, left .18s ease, transform .18s ease, box-shadow .18s ease; }
+tr.drag-placeholder td { background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
+tr.drag-placeholder td > * { visibility: hidden; }
+.grip:active { cursor: grabbing; }
+.tag { display: inline-block; margin-left: .35rem; padding: 0 .3rem; border-radius: 4px; font-size: .68rem; background: var(--accent); color: #fff; vertical-align: middle; }
+.results button { display: flex; align-items: baseline; gap: .6rem; }
+.results .code { min-width: 3.6rem; }
+.results .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#addMarketLabel { background: transparent; border-style: dashed; }
