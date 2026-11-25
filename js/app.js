@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261125125450';
-import * as D from './data.js?v=20261125125450';
-import { Stage, themeColors } from './chart.js?v=20261125125450';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125125450';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125125450';
+import * as M from './market.js?v=20261125130919';
+import * as D from './data.js?v=20261125130919';
+import { Stage, themeColors } from './chart.js?v=20261125130919';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125130919';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125130919';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -14,7 +14,7 @@ const DEFAULTS = {
   leftTf: '1d', rightTf: '1mo', leftBars: 126, rightBars: 120,
   ind: { ma: true, bb: false, vol: true },
   theme: 'dark', colorMode: 'jp', font: 'm', wakeLock: true,
-  alertPopup: true, alertSound: true,
+  alertPopup: true, alertSound: true, alertSec: 10,
 };
 // 画面に出さない固定値
 const CACHE_MIN = 2;      // 場中のキャッシュ有効時間（分）
@@ -57,6 +57,7 @@ function cleanSettings(raw) {
   s.wakeLock = raw.wakeLock !== undefined ? !!raw.wakeLock : DEFAULTS.wakeLock;
   s.alertPopup = raw.alertPopup !== undefined ? !!raw.alertPopup : DEFAULTS.alertPopup;
   s.alertSound = raw.alertSound !== undefined ? !!raw.alertSound : DEFAULTS.alertSound;
+  s.alertSec = int(raw.alertSec, 3, 120, DEFAULTS.alertSec);
   return s;
 }
 function cleanList(raw) {
@@ -357,6 +358,7 @@ async function keepAwake() {
 /* ---------------- 設定画面 ---------------- */
 function openSettings() {
   setAlertMode(false);
+  setOverview(false);
   st.settingsOpen = true;
   document.body.classList.add('in-settings');
   $('settings').hidden = false;
@@ -564,6 +566,7 @@ function setAlertMode(on) {
   if (!on) return;
   $('chkAlertPopup').checked = settings.alertPopup;
   $('chkAlertSound').checked = settings.alertSound;
+  $('selAlertSec').value = [5, 10, 15, 20, 30, 60].includes(settings.alertSec) ? String(settings.alertSec) : '10';
   fillPrices();
 }
 $('btnAlertMode').addEventListener('click', () => setAlertMode(!alertMode));
@@ -571,14 +574,7 @@ $('btnAlertBack').addEventListener('click', () => setAlertMode(false));
 $('btnAlertDone').addEventListener('click', () => closeSettings(false));
 $('chkAlertPopup').addEventListener('change', (e) => { settings.alertPopup = e.target.checked; save(KEY.settings, settings); });
 $('chkAlertSound').addEventListener('change', (e) => { settings.alertSound = e.target.checked; save(KEY.settings, settings); if (!e.target.checked) stopAlarm(); });
-// 音の確認：2回分（約3秒）鳴らす。鳴っている間にもう一度押すと止める
-$('btnAlertTest').addEventListener('click', () => { if (alarmPlaying()) stopAlarm(); else playAlarm(3); });
-// ポップアップの確認：見本のカードを出す（音は鳴らさない）
-$('btnPopupTest').addEventListener('click', () => {
-  const x = list.find((i) => prices[i.code] != null) || list[0] || { code: '7203', name: 'トヨタ自動車' };
-  const price = prices[x.code] ?? 1000;
-  showAlertCard({ code: x.code, name: x.name, target: x.alertPrice || price, price, dir: 'up', at: Date.now(), us: isUS(x.code), test: true });
-});
+$('selAlertSec').addEventListener('change', (e) => { settings.alertSec = Number(e.target.value) || DEFAULTS.alertSec; save(KEY.settings, settings); });
 
 const rowOf = (code) => $('listBody').querySelector(`tr[data-code="${CSS.escape(code)}"]`);
 function updateAlertRow(code) {
@@ -640,7 +636,7 @@ function fireAlert(x, dir, price) {
   delete x.alertOn; // 1回通知したら OFF（設定株価の付近で上下しても何度も鳴らないように）
   saveList();
   if (settings.alertPopup) showAlertCard({ code: x.code, name: x.name, target, price, dir, at: Date.now(), us: isUS(x.code) });
-  if (settings.alertSound) playAlarm(30); // 約30秒鳴らす（通知を消すと止まる）
+  if (settings.alertSound) playAlarm(settings.alertSec); // 設定した秒数だけ鳴らす（通知を消すと止まる）
 }
 D.onPrice((code, price) => {
   const prev = prices[code];
@@ -652,9 +648,80 @@ D.onPrice((code, price) => {
     if (dir) fireAlert(x, dir, price);
   }
   if (st.settingsOpen) updateAlertRow(code);
+  if (overviewMode) updateTile(code);
 });
 initAlertCards($('alertStack'));
 for (const x of list) if (x.alertOn) ensurePrice(x.code);
+
+/* ---------------- 全銘柄一覧（タイル表示） ----------------
+   保存済みのデータから現在値・前日比を並べる（この画面のための通信はしない）。
+   表示中に新しい株価が届いたタイルは、その場で書き換える。 */
+let overviewMode = false;
+let ovSort = 'list';
+const ovQuotes = new Map(); // code -> { price, chg, pct, time }
+function setOverview(on) {
+  overviewMode = on;
+  $('settings').classList.toggle('overview-mode', on);
+  if (!on) return;
+  seg('segOvSort', ovSort, (v) => { ovSort = v; renderOverview(); });
+  renderOverview();
+  Promise.all(list.map(async (x) => ovQuotes.set(x.code, await D.peekQuote(x.code)))).then(() => { if (overviewMode) renderOverview(); });
+}
+$('btnOverview').addEventListener('click', () => setOverview(true));
+$('btnOvBack').addEventListener('click', () => setOverview(false));
+const ovMoney = (v, us) => (v == null ? '—' : us ? `US$${fmtNum(v, true)}` : fmtNum(v));
+function tileHtml(x) {
+  const q = ovQuotes.get(x.code);
+  const us = isUS(x.code);
+  const pct = q?.pct;
+  const dir = pct == null ? '' : pct > 0 ? 'up' : pct < 0 ? 'down' : '';
+  // 色の濃さ：前日比 0〜5% を 8〜38% の濃さに（5%以上は同じ）
+  const heat = dir ? 8 + (Math.min(Math.abs(pct), 5) / 5) * 30 : 0;
+  const sign = (v) => (v > 0 ? '+' : v < 0 ? '−' : '±');
+  const chg = q?.chg == null ? '' : `${sign(q.chg)}${us ? Math.abs(q.chg).toFixed(2) : fmtNum(Math.abs(q.chg))}`;
+  const pctTxt = pct == null ? '' : `${sign(pct)}${Math.abs(pct).toFixed(2)}%`;
+  const flags = `${x.alertOn ? '<svg class="ico" aria-label="アラート中"><use href="#i-bell"/></svg>' : ''}${us ? '<span class="ov-badge">米</span>' : ''}${x.enabled ? '' : '<span class="ov-badge">表示OFF</span>'}`;
+  return `<button type="button" class="ov-tile ${dir ? `t-${dir}` : ''}${x.enabled ? '' : ' off'}" data-code="${esc(x.code)}" style="--heat:${heat.toFixed(0)}%">
+    <div class="ov-top"><span>${esc(x.code)}</span><span class="ov-flags">${flags}</span></div>
+    <div class="ov-name">${esc(x.name || '（名称未設定）')}</div>
+    <div class="ov-price">${q ? ovMoney(q.price, us) : '<span class="ov-empty">データ未取得</span>'}${q && !us ? '<small>円</small>' : ''}</div>
+    <div class="ov-chg"><span class="v">${chg}${pctTxt ? ` (${pctTxt})` : ''}</span><span class="ov-time">${q?.time ? M.fmtStamp(q.time * 1000) : ''}</span></div>
+  </button>`;
+}
+function renderOverview() {
+  const rows = [...list];
+  const key = (x) => ovQuotes.get(x.code)?.pct;
+  if (ovSort !== 'list') {
+    rows.sort((a, b) => {
+      const pa = key(a), pb = key(b);
+      if (pa == null) return pb == null ? 0 : 1; // データの無い銘柄は最後
+      if (pb == null) return -1;
+      return ovSort === 'up' ? pb - pa : pa - pb;
+    });
+  }
+  $('ovGrid').innerHTML = rows.map(tileHtml).join('') || '<p class="ov-empty">登録銘柄がありません</p>';
+  let up = 0, down = 0, flat = 0;
+  for (const x of list) { const v = key(x); if (v == null) continue; if (v > 0) up++; else if (v < 0) down++; else flat++; }
+  $('ovCount').textContent = `(${list.length}銘柄)`;
+  $('ovSum').innerHTML = `<span>値上がり <b class="up">${up}</b></span><span>値下がり <b class="down">${down}</b></span><span>変わらず <b>${flat}</b></span>`;
+}
+async function updateTile(code) {
+  const x = list.find((i) => i.code === code);
+  if (!x) return;
+  ovQuotes.set(code, await D.peekQuote(code));
+  if (!overviewMode) return;
+  if (ovSort !== 'list') { renderOverview(); return; } // 並び順が変わるので全体を描き直す
+  const el = $('ovGrid').querySelector(`[data-code="${CSS.escape(code)}"]`);
+  if (el) el.outerHTML = tileHtml(x);
+}
+// タイルを押したら、その銘柄のチャートへ
+$('ovGrid').addEventListener('click', (e) => {
+  const t = e.target.closest('.ov-tile');
+  if (!t) return;
+  st.code = t.dataset.code;
+  persistState();
+  closeSettings(false);
+});
 
 /* ---------------- アプリ内の確認画面 ----------------
    ブラウザ標準の確認画面（confirm / prompt / alert）は Android で全画面表示を解除してしまうため使わない。
@@ -940,7 +1007,7 @@ document.addEventListener('pointerdown', (e) => {
   keepAwake();
   unlockAudio();
   // ポップアップを出さない設定で音だけ鳴っているときは、画面に触れたら止める
-  if (alarmPlaying() && !document.querySelector('.alert-card') && !e.target.closest?.('#btnAlertTest')) stopAlarm();
+  if (alarmPlaying() && !document.querySelector('.alert-card')) stopAlarm();
 }, { passive: true });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;

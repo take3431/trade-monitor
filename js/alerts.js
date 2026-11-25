@@ -70,7 +70,7 @@ function chimeOnce(at) {
     }
   }
 }
-export function playAlarm(sec = 30) {
+export function playAlarm(sec = 10) {
   unlockAudio();
   if (!actx) return;
   stopAlarm();
@@ -137,7 +137,7 @@ function mount(c) {
   el.innerHTML = `
     <svg class="ico a-ico"><use href="#i-bell"/></svg>
     <div class="a-body">
-      <div class="a-title">${esc(c.code)} ${esc(c.name || '')}${c.test ? '<span class="a-test">テスト</span>' : ''}</div>
+      <div class="a-title">${esc(c.code)} ${esc(c.name || '')}</div>
       <div class="a-msg"><b class="${up ? 'up' : 'down'}">${up ? '▲' : '▼'} 設定株価 ${money(c.target)} を${up ? '上回りました' : '下回りました'}</b></div>
       <div class="a-time">現在値 ${money(c.price)}　${when}</div>
     </div>

@@ -329,7 +329,6 @@ body.locked > *:not(#gate):not(svg) { visibility: hidden; }
 .settings.alert-mode :is(.c-sw, #mainPanel, .list-hint, .del) { display: none; }
 .icon-btn.clr { color: var(--muted); }
 .icon-btn.clr:disabled { opacity: .3; }
-.alert-tests { justify-content: flex-start; flex-wrap: wrap; }
 #btnAlertMode[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface2)); box-shadow: 0 0 0 1px var(--accent); }
 .c-price { width: 6.5rem; font-variant-numeric: tabular-nums; }
 .c-target { width: 10rem; }
@@ -359,7 +358,6 @@ th.c-target, th.c-alert { text-align: center; }
 }
 .alert-card.dir-up { border-left-color: var(--up); }
 .alert-card.dir-down { border-left-color: var(--down); }
-.alert-card .a-test { margin-left: .5rem; padding: 0 .35rem; border-radius: 4px; font-size: .7rem; font-weight: 600; background: var(--surface2); color: var(--muted); border: 1px solid var(--border2); vertical-align: middle; }
 .alert-card .a-time { font-variant-numeric: tabular-nums; }
 .alert-card .a-ico { width: 1.6rem; height: 1.6rem; color: var(--warn); margin-top: .1rem; animation: ring 1.2s ease 2; }
 .alert-card .a-body { min-width: 0; }
@@ -375,3 +373,39 @@ th.c-target, th.c-alert { text-align: center; }
 @keyframes ring { 0%, 100% { transform: rotate(0); } 15% { transform: rotate(14deg); } 30% { transform: rotate(-12deg); } 45% { transform: rotate(8deg); } 60% { transform: rotate(-4deg); } }
 /* 設定画面では右側の操作を隠さないよう、左下（一覧の上）に出す */
 body.in-settings .alert-stack { top: auto; right: auto; left: calc(1.2rem + env(safe-area-inset-left)); bottom: calc(2.6rem + env(safe-area-inset-bottom)); flex-direction: column-reverse; }
+
+/* ===== 全銘柄一覧（タイル表示） ===== */
+.settings:not(.overview-mode) #overview { display: none; }
+.settings.overview-mode > :not(#overview) { display: none; }
+.overview { grid-column: 1 / -1; display: flex; flex-direction: column; overflow: hidden; }
+.ov-head { display: flex; align-items: center; gap: 1rem 1.4rem; flex-wrap: wrap; padding: .6rem .8rem; border-bottom: 1px solid var(--border); }
+.ov-head h2 { margin: 0; font-size: 1.25rem; }
+.ov-sum { display: flex; gap: .9rem; font-size: .9rem; font-variant-numeric: tabular-nums; }
+.ov-sum b { font-size: 1.05rem; }
+.ov-tools { display: flex; align-items: center; gap: .6rem; margin-left: auto; }
+.ov-grid {
+  flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; padding: .7rem;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(12.5rem, 1fr)); gap: .6rem; align-content: start;
+}
+.ov-tile {
+  --tone: var(--muted);
+  text-align: left; border: 1px solid var(--border); border-radius: 12px; padding: .65rem .8rem .7rem;
+  background: color-mix(in srgb, var(--tone) var(--heat, 0%), var(--surface2));
+  display: grid; grid-template-rows: auto auto 1fr auto; gap: .15rem; min-height: 8.2rem; position: relative;
+}
+.ov-tile.t-up { --tone: var(--up); border-color: color-mix(in srgb, var(--up) 45%, var(--border)); }
+.ov-tile.t-down { --tone: var(--down); border-color: color-mix(in srgb, var(--down) 45%, var(--border)); }
+.ov-tile:active { transform: scale(.98); }
+.ov-tile.off { opacity: .55; }
+.ov-top { display: flex; align-items: center; gap: .4rem; font-size: .85rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ov-top .ov-flags { margin-left: auto; display: flex; gap: .3rem; align-items: center; }
+.ov-flags .ico { width: 1rem; height: 1rem; color: var(--warn); }
+.ov-badge { font-size: .65rem; font-weight: 600; padding: 0 .3rem; border-radius: 4px; border: 1px solid var(--border2); color: var(--muted); }
+.ov-name { font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-price { font-size: 1.55rem; font-weight: 700; font-variant-numeric: tabular-nums; align-self: end; line-height: 1.2; }
+.ov-price small { font-size: .8rem; font-weight: 600; margin-left: .1rem; }
+.ov-chg { display: flex; justify-content: space-between; align-items: baseline; gap: .4rem; font-size: .95rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ov-chg .ov-time { font-size: .7rem; font-weight: 400; color: var(--muted); }
+.ov-tile.t-up .ov-chg .v { color: var(--up); }
+.ov-tile.t-down .ov-chg .v { color: var(--down); }
+.ov-empty { color: var(--muted); font-size: .9rem; }
