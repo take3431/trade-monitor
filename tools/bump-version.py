@@ -26,6 +26,7 @@ p.write_text(s, encoding='utf-8')
 for f in (ROOT / 'js').glob('*.js'):
     s = f.read_text(encoding='utf-8')
     s = re.sub(r"(from '\./[^'?]+\.js)(\?v=\d+)?'", rf"\1?v={VER}'", s)
+    s = re.sub(r"(import\('\./[^'?]+\.js)(\?v=\d+)?'", rf"\1?v={VER}'", s)
     s = re.sub(r"(fetch\('data/jp-stocks\.json)(\?v=\d+)?'", rf"\1?v={VER}'", s)
     f.write_text(s, encoding='utf-8')
 

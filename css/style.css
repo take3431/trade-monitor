@@ -309,3 +309,15 @@ tr.drag-placeholder td > * { visibility: hidden; }
 
 .mode-badge { font-size: .7rem; padding: .05rem .4rem; border-radius: 99px; border: 1px solid var(--border2); color: var(--muted); white-space: nowrap; }
 .mode-badge.warn { border-color: var(--warn); color: var(--warn); }
+
+/* ===== 入口のパスワード ===== */
+body.locked > *:not(#gate):not(svg) { visibility: hidden; }
+.gate { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: var(--bg); padding: 1rem; }
+.gate-box { width: min(22rem, 92vw); display: flex; flex-direction: column; gap: .8rem; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 14px; padding: 1.4rem 1.3rem; }
+.gate-title { font-weight: 700; font-size: 1.2rem; letter-spacing: .03em; }
+.gate-text { margin: 0; color: var(--muted); font-size: .9rem; }
+.gate input { height: 2.8rem; font-size: 1.1rem; letter-spacing: .1em; padding: 0 .8rem; border-radius: 8px;
+  border: 1px solid var(--border2); background: var(--bg); color: var(--text); -webkit-user-select: text; user-select: text; }
+.gate-msg { margin: 0; min-height: 1.3em; font-size: .82rem; color: var(--muted); }
+.gate-msg.err { color: var(--warn); }
