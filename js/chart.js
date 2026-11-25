@@ -1,7 +1,7 @@
 // 表示レイヤー（ステージ）とチャート描画
 // ステージを2枚重ねておき、非表示側に描画してから切り替えることでチラつきを防ぐ。
-import { TF } from './data.js?v=20261125113748';
-import { fmtStamp } from './market.js?v=20261125113748';
+import { TF } from './data.js?v=20261125114617';
+import { fmtStamp } from './market.js?v=20261125114617';
 
 const LC = window.LightweightCharts;
 const JST = 9 * 3600;
@@ -209,7 +209,7 @@ class Pane {
 const STAGE_HTML = `
   <section class="sym-head">
     <div class="sym-id">
-      <div class="sym-title"><span class="sym-code"></span><span class="sym-name"></span>
+      <div class="sym-title"><span class="sym-code"></span><a class="sym-name" target="_blank" rel="noopener noreferrer"></a>
         <span class="sym-quote"><span class="q-price"></span><span class="q-chg"></span></span></div>
     </div>
     <div class="sym-meta"><div class="sym-pos"></div><div class="sym-time"></div></div>
@@ -221,6 +221,12 @@ const STAGE_HTML = `
       <div class="chart-box"><div class="legend"></div><div class="pane-msg" hidden>チャートデータ未取得（通信回復後に自動で再取得します）</div></div>
     </div>`).join('')}
   </section>`;
+
+// Yahoo!ファイナンス（日本）の銘柄ページ。日本株は「7203.T」、米国株はティッカーのまま
+function yahooJpUrl(code) {
+  const sym = /^[A-Z]/.test(code) ? code : `${code}.T`;
+  return `https://finance.yahoo.co.jp/quote/${encodeURIComponent(sym)}`;
+}
 
 export class Stage {
   constructor(root) {
@@ -260,6 +266,9 @@ export class Stage {
     this.entries = entries;
     e.code.textContent = item.code;
     e.name.textContent = item.name || '';
+    // 銘柄名を押すと Yahoo!ファイナンス（日本）の銘柄ページを新しいタブで開く
+    e.name.href = yahooJpUrl(item.code);
+    e.name.title = 'Yahoo!ファイナンスで開く';
     // 現在値と前日比（日本式：上昇＝赤、下落＝緑。設定で逆にできる）
     const q = entries.quote;
     const isUs = /^[A-Z]/.test(item.code);
