@@ -100,7 +100,7 @@ class Pane {
       timeScale: { borderColor: c.border, rightOffset: 3, tickMarkFormatter: tickFmt, lockVisibleTimeRangeOnResize: true },
       crosshair: { mode: 0, vertLine: { color: c.cross }, horzLine: { color: c.cross } },
       localization: {
-        locale: 'ja-JP', priceFormatter: fmtPrice,
+        locale: 'ja-JP', priceFormatter: (p) => (p < 0 ? '' : fmtPrice(p)),
         timeFormatter: (t) => {
           const d = new Date(t * 1000);
           const s = `${d.getUTCFullYear()}/${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())}`;

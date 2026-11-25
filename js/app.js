@@ -14,7 +14,7 @@ const DEFAULTS = {
   ind: { ma: true, bb: false, vol: true },
   theme: 'dark', colorMode: 'jp', font: 'm', wakeLock: true,
   cacheMin: 2, prefetchSec: 25,
-  proxy: D.BUILTIN_PROXIES[0], fallback: true, demo: false,
+  proxy: '', fallback: true, demo: false,
 };
 const DEFAULT_LIST = [
   ['7203', 'トヨタ自動車', true], ['9984', 'ソフトバンクグループ', true], ['6758', 'ソニーグループ', true],
@@ -31,6 +31,9 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 /* ---------------- 状態 ---------------- */
 const storedSettings = load(KEY.settings, {});
 const settings = { ...DEFAULTS, ...storedSettings, ind: { ...DEFAULTS.ind, ...(storedSettings.ind || {}) } };
+// 旧版で保存された公開プロキシ（現在は使えない）は消去
+if (/corsproxy\.io|allorigins\.win|codetabs\.com/.test(settings.proxy || '')) settings.proxy = '';
+if (settings.prefetchSec < 20) settings.prefetchSec = 25;
 let list = load(KEY.list, null) || DEFAULT_LIST;
 const saved = load(KEY.state, {});
 const st = {
@@ -109,6 +112,7 @@ async function show(code, { nav = false, force = false, retry = false } = {}) {
   setLoading(true);
   const res = await D.loadSet(code, tfs, {
     force,
+    prio: D.PRIO.show,
     // 片方のチャートが届いた時点で先に表示する
     onEntry: (partial) => {
       if (seq === st.seq && stages[front].code === code) render(stages[front], item, partial, true, true);
@@ -160,7 +164,7 @@ async function prefetch(code) {
   if (!code || st.prefetching === code) return;
   st.prefetching = code;
   try {
-    const r = await D.loadSet(code, neededTfs());
+    const r = await D.loadSet(code, neededTfs(), { prio: D.PRIO.prefetch });
     if (r.error) st.lastError = r.error;
   } finally {
     st.prefetching = null;
@@ -179,6 +183,7 @@ function pauseReason(now) {
 function tick() {
   const now = Date.now();
   updateStatus(now);
+  warmTick(now);
   if (!pauseReason(now) && enabledCount() > 0) {
     st.remaining--;
     const lead = Math.min(settings.prefetchSec, settings.interval - 2);
@@ -186,6 +191,34 @@ function tick() {
     if (st.remaining <= 0) go(1, false);
   }
   renderCountdown(now);
+}
+
+/* ---------------- 裏での先回り取得 ----------------
+   表示を待たずに、登録銘柄のチャートデータを1件ずつ順番に取得・更新しておく。
+   未取得の銘柄を優先し、場中は15分以上古いものだけを更新する（通信量を抑えるため）。 */
+const WARM_EVERY_MS = 8000;
+const WARM_MAX_AGE = 15 * 60e3;
+let warmAt = 0, warmBusy = false, warmCursor = 0;
+async function warmTick(now) {
+  if (warmBusy || st.settingsOpen || document.hidden || now - warmAt < WARM_EVERY_MS || !D.isIdle()) return;
+  warmAt = now;
+  const en = list.filter((x) => x.enabled);
+  if (!en.length) return;
+  warmBusy = true;
+  try {
+    const tfs = neededTfs();
+    // 未取得の銘柄を先に
+    let target = null;
+    for (const x of en) {
+      const c = await D.cachedSet(x.code, tfs);
+      if (tfs.some((tf) => !c[tf]?.bars?.length)) { target = x.code; break; }
+    }
+    if (!target) target = en[warmCursor++ % en.length].code;
+    const r = await D.loadSet(target, tfs, { prio: D.PRIO.warm, maxAgeMs: WARM_MAX_AGE });
+    if (r.fetched && !r.error && st.lastError && target === st.code) st.lastError = null;
+  } catch { /* 次回再試行 */ } finally {
+    warmBusy = false;
+  }
 }
 
 /* ---------------- ステータス表示 ---------------- */
@@ -498,7 +531,7 @@ $('addForm').addEventListener('submit', (e) => {
   if (!CODE_RE.test(code)) { msg.textContent = '銘柄コードは4桁で入力してください（例: 7203, 130A）'; return; }
   if (list.some((x) => x.code === code)) { msg.textContent = 'すでに登録されています'; return; }
   if (list.length >= MAX_SYMBOLS) { msg.textContent = `登録できるのは最大${MAX_SYMBOLS}銘柄です`; return; }
-  list.push({ code, name: $('addName').value.trim() || lookupName(code) || D.getQuote(code)?.name || '', market: $('addMarket').value, enabled: true });
+  list.push({ code, name: $('addName').value.trim() || lookupName(code) || '', market: $('addMarket').value, enabled: true });
   saveList();
   renderList();
   dlg.close();
@@ -509,7 +542,7 @@ $('addForm').addEventListener('submit', (e) => {
 /* ---------------- イベント ---------------- */
 $('errText').addEventListener('click', () => {
   if (!st.lastError) return;
-  alert(`データを取得できませんでした。\n\n${String(st.lastError.message || st.lastError).split(' / ').join('\n')}\n\n公開プロキシは停止・有料化されていることがあります。設定画面の「CORSプロキシURL」に、ご自身の Cloudflare Worker の URL を設定してください（README 参照）。`);
+  alert(`データを取得できませんでした。\n\n${String(st.lastError.message || st.lastError).split(' / ').join('\n')}\n\n【中継経路の状態】\n${D.routeStatus().join('\n')}\n\n保存済みのデータがあればそれを表示し、自動で再取得を続けます。`);
 });
 $('btnMenu').addEventListener('click', openSettings);
 $('btnClose').addEventListener('click', closeSettings);

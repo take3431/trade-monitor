@@ -1,83 +1,171 @@
 // データ取得・キャッシュ層
-//  - Yahoo Finance v8 chart API（CORS プロキシ経由）
-//  - メモリ + IndexedDB にチャートデータをキャッシュ
-//  - 株価（現在値・前日比）は LocalStorage に保存し、起動直後から表示
-import { isFresh, dayKey } from './market.js';
+//
+// 取得の工夫（チャートが出ない状態をなくすため）
+//  1. 経路の複線化：Yahoo Finance へは複数の中継経路を用意し、成功率の高い順に使う。
+//     応答が遅いときは別経路も並行して試し、先に返った方を採用する（ヘッジ要求）。
+//     失敗した経路は一定時間休ませ、Yahoo の窓口 query1 / query2 も交互に使う。
+//  2. 通信量の削減：日足10年分を1回だけ取得し、週足・月足はアプリ内で集計する。
+//     以後は直近1か月分の小さなデータだけを取りに行き、手元のデータに継ぎ足す。
+//  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
+//  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
+import { isFresh, dayKey, marketPhase } from './market.js';
 
-const YH1 = 'https://query1.finance.yahoo.com';
-const YH2 = 'https://query2.finance.yahoo.com';
+const YH = ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com'];
 
-export const BUILTIN_PROXIES = [
-  'https://corsproxy.io/?url={url}',
-  'https://api.allorigins.win/raw?url={url}',
-  'https://api.codetabs.com/v1/proxy?quest={url}',
-];
-
-// 足種ごとの取得条件
+// 足種ごとの設定（1d/1wk/1mo は日足10年分から作る）
 export const TF = {
-  '5m': { label: '5分', title: '5分足 (5min)', interval: '5m', range: '5d', ma: [5, 25], ttlMul: 1,
+  '5m': { label: '5分', title: '5分足 (5min)', ma: [5, 25],
     periods: [[66, '1日'], [132, '2日'], [330, '5日']], def: 132, short: '5m' },
-  '1d': { label: '日足', title: '日足 (Daily)', interval: '1d', range: '2y', ma: [5, 25], ttlMul: 1,
+  '1d': { label: '日足', title: '日足 (Daily)', ma: [5, 25],
     periods: [[63, '3ヶ月'], [126, '6ヶ月'], [250, '1年'], [490, '2年']], def: 126, short: '1D' },
-  '1wk': { label: '週足', title: '週足 (Weekly)', interval: '1wk', range: '10y', ma: [13, 26], ttlMul: 3,
-    periods: [[52, '1年'], [104, '2年'], [260, '5年'], [0, '全期間']], def: 104, short: '1W' },
-  '1mo': { label: '月足', title: '月足 (Monthly)', interval: '1mo', range: 'max', ma: [12, 24], ttlMul: 3,
-    periods: [[36, '3年'], [60, '5年'], [120, '10年'], [0, '全期間']], def: 120, short: '1M' },
+  '1wk': { label: '週足', title: '週足 (Weekly)', ma: [13, 26],
+    periods: [[52, '1年'], [104, '2年'], [260, '5年'], [0, '10年']], def: 104, short: '1W' },
+  '1mo': { label: '月足', title: '月足 (Monthly)', ma: [12, 24],
+    periods: [[36, '3年'], [60, '5年'], [0, '10年']], def: 0, short: '1M' },
 };
 
-const cfg = { proxy: BUILTIN_PROXIES[0], fallback: true, demo: false, ttlMs: 120e3, timeout: 15000 };
+const cfg = { proxy: '', fallback: true, demo: false, ttlMs: 120e3, timeout: 15000 };
 export function configure(o) { Object.assign(cfg, o); }
-export function isDemo() { return cfg.demo; }
 
-/* ---------------- HTTP ---------------- */
-let preferred = null;
-// APIキー必須などで拒否されたプロキシは30分間使わない（無駄な待ち時間を減らす）
-const benched = new Map();
+/* ======================= 中継経路 ======================= */
+const enc = encodeURIComponent;
+const jsonBody = (t) => JSON.parse(t);
+const ROUTES = [
+  { id: 'jina', label: 'r.jina.ai', score: 0.9,
+    build: (u) => `https://r.jina.ai/${u}`,
+    parse: (t) => {
+      const i = t.indexOf('{"chart"');
+      const s = i >= 0 ? i : t.indexOf('{');
+      if (s < 0) throw new Error('応答形式不正');
+      return JSON.parse(t.slice(s, t.lastIndexOf('}') + 1));
+    } },
+  { id: 'allorigins-get', label: 'allorigins(get)', score: 0.4,
+    build: (u) => `https://api.allorigins.win/get?url=${enc(u)}`,
+    parse: (t) => JSON.parse(JSON.parse(t).contents) },
+  { id: 'allorigins-raw', label: 'allorigins(raw)', score: 0.35,
+    build: (u) => `https://api.allorigins.win/raw?url=${enc(u)}`, parse: jsonBody },
+  { id: 'codetabs', label: 'codetabs', score: 0.3,
+    build: (u) => `https://api.codetabs.com/v1/proxy?quest=${enc(u)}`, parse: jsonBody },
+];
+// 以前の設定で保存された公開プロキシは独自プロキシとして扱わない
+const LEGACY = /corsproxy\.io|allorigins\.win|codetabs\.com/;
 
-function proxied(tpl, url) {
-  if (tpl === 'direct') return url;
-  if (tpl.includes('{url}')) return tpl.replace('{url}', encodeURIComponent(url));
-  if (tpl.includes('{rawurl}')) return tpl.replace('{rawurl}', url);
-  return tpl + encodeURIComponent(url);
-}
-
-async function fetchJson(url) {
-  let list = [];
-  if (cfg.proxy) list.push(cfg.proxy.trim());
-  if (cfg.fallback || !list.length) for (const p of BUILTIN_PROXIES) if (!list.includes(p)) list.push(p);
-  if (preferred && list.includes(preferred)) list = [preferred, ...list.filter((p) => p !== preferred)];
-  const now = Date.now();
-  const usable = list.filter((p) => !(benched.get(p) > now));
-  if (usable.length) list = usable;
-  const reasons = [];
-  for (const tpl of list) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), cfg.timeout);
-    let host = tpl;
-    try { host = tpl === 'direct' ? 'direct' : new URL(tpl.replace(/\{(raw)?url\}/, '')).hostname; } catch { /* keep */ }
-    try {
-      const r = await fetch(proxied(tpl, url), { signal: ctrl.signal, cache: 'no-store' });
-      if (!r.ok) {
-        if (r.status === 401 || r.status === 403) benched.set(tpl, Date.now() + 30 * 60e3);
-        const why = r.status === 401 || r.status === 403 ? 'APIキー必要/拒否' : r.status === 429 ? '回数制限' : `HTTP ${r.status}`;
-        throw new Error(why);
-      }
-      const j = await r.json();
-      preferred = tpl;
-      return j;
-    } catch (e) {
-      const why = e.name === 'AbortError' ? 'タイムアウト' : e instanceof SyntaxError ? '応答形式不正' : e.message === 'Failed to fetch' || e.name === 'TypeError' ? '接続不可' : e.message;
-      reasons.push(`${host}: ${why}`);
-    } finally {
-      clearTimeout(timer);
-    }
+function customRoute() {
+  const tpl = (cfg.proxy || '').trim();
+  if (!tpl || LEGACY.test(tpl)) return null;
+  if (!customRoute.r || customRoute.r.tpl !== tpl) {
+    let label = 'custom';
+    try { label = new URL(tpl.replace(/\{(raw)?url\}/, '')).hostname; } catch { /* keep */ }
+    customRoute.r = {
+      id: 'custom', label, tpl, score: 1,
+      build: (u) => (tpl.includes('{url}') ? tpl.replace('{url}', enc(u)) : tpl.includes('{rawurl}') ? tpl.replace('{rawurl}', u) : tpl + enc(u)),
+      parse: jsonBody,
+    };
   }
-  const err = new Error(reasons.join(' / ') || '取得失敗');
-  err.proxyFailure = true;
-  throw err;
+  return customRoute.r;
 }
 
-/* ---------------- IndexedDB ---------------- */
+const cooldown = new Map(); // id -> 再利用可能になる時刻
+
+function routeOrder() {
+  const c = customRoute();
+  let list = c ? [c] : [];
+  if (!c || cfg.fallback) list = list.concat(ROUTES);
+  const now = Date.now();
+  const ready = list.filter((r) => !(cooldown.get(r.id) > now)).sort((a, b) => b.score - a.score);
+  if (ready.length) return ready;
+  // 全部休止中なら、一番早く復帰するものを使う
+  return list.sort((a, b) => (cooldown.get(a.id) || 0) - (cooldown.get(b.id) || 0)).slice(0, 1);
+}
+
+function routeOk(r) { r.score = r.score * 0.7 + 0.3; cooldown.delete(r.id); }
+function routeFail(r, status) {
+  r.score *= 0.6;
+  const ms = status === 401 || status === 403 ? 30 * 60e3 : status === 429 ? 90e3 : 20e3;
+  cooldown.set(r.id, Date.now() + ms);
+}
+export function routeStatus() {
+  return [customRoute(), ...ROUTES].filter(Boolean).map((r) => `${r.label}: ${Math.round(r.score * 100)}%${cooldown.get(r.id) > Date.now() ? '（休止中）' : ''}`);
+}
+
+const HEDGE_MS = 4000;
+let hostFlip = 0;
+
+// 1件の Yahoo API 呼び出しを、経路を切り替えながら成功するまで試みる
+function fetchYahoo(path) {
+  const order = routeOrder();
+  return new Promise((resolve, reject) => {
+    let idx = 0, pending = 0, done = false;
+    const errs = [], ctrls = [];
+    let hedge = null;
+    const finish = () => { done = true; clearTimeout(hedge); ctrls.forEach((c) => c.abort()); };
+    const launch = () => {
+      if (done || idx >= order.length) return;
+      const r = order[idx++];
+      const url = `${YH[hostFlip++ % 2]}${path}${path.includes('?') ? '&' : '?'}_=${Math.floor(Date.now() / 30000)}`;
+      const ctrl = new AbortController();
+      ctrls.push(ctrl);
+      const timer = setTimeout(() => ctrl.abort(), cfg.timeout);
+      pending++;
+      (async () => {
+        let status = 0;
+        try {
+          const res = await fetch(r.build(url), { signal: ctrl.signal, cache: 'no-store' });
+          status = res.status;
+          if (!res.ok) throw new Error(status === 401 || status === 403 ? '拒否' : status === 429 ? '回数制限' : `HTTP ${status}`);
+          const json = r.parse(await res.text());
+          if (!json || !json.chart) throw new Error('応答形式不正');
+          if (done) return;
+          routeOk(r);
+          finish();
+          resolve(json);
+        } catch (e) {
+          if (done) return;
+          routeFail(r, status);
+          const why = e.name === 'AbortError' ? 'タイムアウト' : e instanceof SyntaxError ? '応答形式不正' : e.name === 'TypeError' ? '接続不可' : e.message;
+          errs.push(`${r.label}: ${why}`);
+        } finally {
+          clearTimeout(timer);
+          pending--;
+          if (!done) {
+            if (idx < order.length) launch();
+            else if (pending === 0) { finish(); reject(new Error(errs.join(' / ') || '取得失敗')); }
+          }
+        }
+      })();
+    };
+    launch();
+    hedge = setTimeout(launch, HEDGE_MS); // 遅いときは次の経路も並行して試す
+  });
+}
+
+/* ======================= 優先度付きキュー ======================= */
+export const PRIO = { show: 0, prefetch: 1, warm: 2 };
+const MAX_ACTIVE = 2;
+const MIN_GAP_MS = 1200; // 連続アクセスの間隔（中継先の回数制限対策）
+let active = 0, lastStart = 0;
+const queue = [];
+
+function schedule(prio, fn) {
+  return new Promise((resolve, reject) => {
+    queue.push({ prio, fn, resolve, reject, t: Date.now() });
+    queue.sort((a, b) => a.prio - b.prio || a.t - b.t);
+    pump();
+  });
+}
+function pump() {
+  if (active >= MAX_ACTIVE || !queue.length) return;
+  const wait = lastStart + MIN_GAP_MS - Date.now();
+  if (wait > 0) { clearTimeout(pump.t); pump.t = setTimeout(pump, wait); return; }
+  const job = queue.shift();
+  active++;
+  lastStart = Date.now();
+  job.fn().then(job.resolve, job.reject).finally(() => { active--; pump(); });
+  pump();
+}
+export function isIdle() { return active === 0 && queue.length === 0; }
+
+/* ======================= 保存（メモリ + IndexedDB） ======================= */
 let dbp = null;
 function db() {
   if (!dbp) {
@@ -95,141 +183,67 @@ async function idb(mode, fn) {
   if (!d) return null;
   return new Promise((res) => {
     try {
-      const tx = d.transaction('series', mode);
-      const q = fn(tx.objectStore('series'));
+      const q = fn(d.transaction('series', mode).objectStore('series'));
       q.onsuccess = () => res(q.result ?? null);
       q.onerror = () => res(null);
     } catch { res(null); }
   });
 }
-
 const mem = new Map();
-const keyOf = (code, tf) => `${cfg.demo ? 'demo|' : ''}${code}|${tf}`;
-
-export async function getCached(code, tf) {
-  const k = keyOf(code, tf);
+const keyOf = (code, kind) => `${cfg.demo ? 'demo|' : ''}${code}|${kind}`;
+async function getStored(code, kind) {
+  const k = keyOf(code, kind);
   if (mem.has(k)) return mem.get(k);
   const v = await idb('readonly', (s) => s.get(k));
   if (v) mem.set(k, v);
   return v;
 }
-
-async function putCached(code, tf, entry) {
-  const k = keyOf(code, tf);
-  mem.set(k, entry);
-  if (!cfg.demo) await idb('readwrite', (s) => s.put(entry, k));
+async function putStored(code, kind, v) {
+  const k = keyOf(code, kind);
+  mem.set(k, v);
+  if (!cfg.demo) await idb('readwrite', (s) => s.put(v, k));
 }
-
 export async function clearCache() {
   mem.clear();
-  quotes.clear();
-  saveQuotes();
+  derived.clear();
   await idb('readwrite', (s) => s.clear());
 }
 
-/* ---------------- 株価（現在値）ストア ---------------- */
-const QKEY = 'tm.quotes.v1';
-const quotes = new Map(Object.entries((() => { try { return JSON.parse(localStorage.getItem(QKEY)) || {}; } catch { return {}; } })()));
-const demoQuotes = new Map();
-function saveQuotes() { try { localStorage.setItem(QKEY, JSON.stringify(Object.fromEntries(quotes))); } catch { /* 容量超過等は無視 */ } }
-
-export function getQuote(code) { return (cfg.demo ? demoQuotes : quotes).get(code) || null; }
-export function removeQuote(code) { quotes.delete(code); saveQuotes(); }
-
-export function quoteFrom(entry) {
-  if (!entry) return null;
-  const b = entry.bars;
-  const meta = entry.meta || {};
-  if (!b.length && meta.price == null) return null;
-  const last = b[b.length - 1];
-  const price = meta.price ?? last?.[4];
-  const tTime = (meta.time || last?.[0] || 0) * 1000;
-  let prev;
-  if (last && dayKey(last[0] * 1000) === dayKey(tTime)) prev = b[b.length - 2]?.[4];
-  else prev = last?.[4];
-  if (prev == null) prev = meta.prevClose;
-  const chg = prev != null ? price - prev : null;
-  const pct = prev ? (chg / prev) * 100 : null;
-  return { price, prev, chg, pct, time: tTime, name: meta.name || '', fetchedAt: entry.fetchedAt };
-}
-
-function storeQuote(code, entry) {
-  const q = quoteFrom(entry);
-  if (!q) return;
-  (cfg.demo ? demoQuotes : quotes).set(code, q);
-  if (!cfg.demo) saveQuotes();
-}
-
-/* ---------------- Yahoo 応答の整形 ---------------- */
-function parseChart(json, tf) {
+/* ======================= Yahoo 応答の整形 ======================= */
+function parseChart(json) {
   const r = json?.chart?.result?.[0];
-  if (!r) throw new Error(json?.chart?.error?.description || 'データなし');
+  if (!r) {
+    const e = new Error(`銘柄データなし（${json?.chart?.error?.description || json?.chart?.error?.code || '不明'}）`);
+    e.noData = true;
+    throw e;
+  }
   const ts = r.timestamp || [];
   const q = r.indicators?.quote?.[0] || {};
-  const raw = [];
+  const bars = [];
   for (let i = 0; i < ts.length; i++) {
     const o = q.open?.[i], h = q.high?.[i], l = q.low?.[i], c = q.close?.[i];
     if (o == null || h == null || l == null || c == null) continue;
-    raw.push([ts[i], o, h, l, c, q.volume?.[i] || 0]);
+    bars.push([ts[i], o, h, l, c, q.volume?.[i] || 0]);
   }
-  raw.sort((a, b) => a[0] - b[0]);
-  // 同一期間の重複（Yahoo は最新期間を別タイムスタンプで返すことがある）を統合
-  const bars = [];
-  const periodKey = (t) => {
-    const k = dayKey(t * 1000);
-    if (tf === '1mo') return k.slice(0, 7);
-    if (tf === '5m') return t;
-    return k;
-  };
-  for (const bar of raw) {
-    const prev = bars[bars.length - 1];
-    const same = prev && (tf === '1wk' ? bar[0] - prev[0] < 6 * 86400 : periodKey(prev[0]) === periodKey(bar[0]));
-    if (same) {
-      bars[bars.length - 1] = [prev[0], prev[1], Math.max(prev[2], bar[2]), Math.min(prev[3], bar[3]), bar[4], Math.max(prev[5], bar[5])];
-    } else {
-      bars.push(bar);
-    }
-  }
+  bars.sort((a, b) => a[0] - b[0]);
   const m = r.meta || {};
-  return {
-    bars,
-    meta: {
-      price: m.regularMarketPrice ?? null,
-      time: m.regularMarketTime ?? null,
-      prevClose: m.previousClose ?? null,
-      name: m.shortName || m.longName || '',
-      exchange: m.fullExchangeName || m.exchangeName || '',
-    },
-  };
+  return { bars, meta: { price: m.regularMarketPrice ?? null, time: m.regularMarketTime ?? null, name: m.shortName || m.longName || '' } };
 }
 
-/* ---------------- デモデータ ---------------- */
-function hash(s) { let h = 2166136261; for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
-function rng(seed) { let s = seed || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
-const tick = (p) => Math.round(p * 2) / 2;
-const demoDailyCache = new Map();
-
-function demoDaily(code) {
-  if (demoDailyCache.has(code)) return demoDailyCache.get(code);
-  const rnd = rng(hash(code));
-  let p = 400 + rnd() * 6000;
-  const bars = [];
-  const today = dayKey(Date.now());
-  for (let t = Date.UTC(2008, 0, 1); ; t += 86400e3) {
-    const k = dayKey(t);
-    if (k > today) break;
-    const dow = new Date(t).getUTCDay();
-    if (dow === 0 || dow === 6) continue;
-    const o = p * (1 + (rnd() - 0.5) * 0.01);
-    const c = o * (1 + (rnd() - 0.495) * 0.035);
-    const h = Math.max(o, c) * (1 + rnd() * 0.012);
-    const l = Math.min(o, c) * (1 - rnd() * 0.012);
-    const v = Math.round((0.5 + rnd() * 1.5) * 3e6 * (1 + Math.abs(c - o) / o * 20));
-    bars.push([t / 1000, tick(o), tick(h), tick(l), tick(c), v]);
-    p = c;
+// 同じ日のバーは1本にまとめる（新しい方を採用）
+function dedupeDaily(bars) {
+  const out = [];
+  for (const b of bars) {
+    const last = out[out.length - 1];
+    if (last && dayKey(last[0] * 1000) === dayKey(b[0] * 1000)) out[out.length - 1] = b;
+    else out.push(b);
   }
-  demoDailyCache.set(code, bars);
-  return bars;
+  return out;
+}
+function mergeTail(base, tail) {
+  if (!tail.length) return base;
+  const from = dayKey(tail[0][0] * 1000);
+  return dedupeDaily(base.filter((b) => dayKey(b[0] * 1000) < from).concat(tail));
 }
 
 function aggregate(bars, keyFn) {
@@ -243,86 +257,125 @@ function aggregate(bars, keyFn) {
   if (cur) out.push(cur);
   return out;
 }
+const weekKey = (t) => { const d = new Date((t + 9 * 3600) * 1000); return dayKey((t - ((d.getUTCDay() + 6) % 7) * 86400) * 1000); };
+const monthKey = (t) => dayKey(t * 1000).slice(0, 7);
 
-function demoIntraday(daily, rnd) {
+const derived = new Map();
+function deriveEntry(code, base, tf) {
+  if (!base) return null;
+  if (tf === '1d') return base;
+  const slot = `${keyOf(code, 'base')}|${tf}`;
+  const hit = derived.get(slot);
+  if (hit && hit.at === base.fetchedAt && hit.n === base.bars.length) return hit.v;
+  const bars = aggregate(base.bars, tf === '1wk' ? weekKey : monthKey);
+  const v = { ...base, bars };
+  derived.set(slot, { at: base.fetchedAt, n: base.bars.length, v });
+  return v;
+}
+
+/* ======================= デモデータ ======================= */
+function hash(s) { let h = 2166136261; for (const ch of s) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+function rng(seed) { let s = seed || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
+const tick = (p) => Math.round(p * 2) / 2;
+function demoDaily(code) {
+  const rnd = rng(hash(code));
+  let p = 400 + rnd() * 6000;
+  const bars = [];
+  const today = dayKey(Date.now());
+  for (let t = Date.UTC(2016, 0, 4); dayKey(t) <= today; t += 86400e3) {
+    const dow = new Date(t).getUTCDay();
+    if (dow === 0 || dow === 6) continue;
+    const o = p * (1 + (rnd() - 0.5) * 0.01);
+    const c = o * (1 + (rnd() - 0.495) * 0.035);
+    const h = Math.max(o, c) * (1 + rnd() * 0.012);
+    const l = Math.min(o, c) * (1 - rnd() * 0.012);
+    bars.push([t / 1000, tick(o), tick(h), tick(l), tick(c), Math.round((0.5 + rnd() * 1.5) * 3e6)]);
+    p = c;
+  }
+  return bars;
+}
+function demoIntraday(code) {
+  const rnd = rng(hash(code + 'i'));
   const out = [];
-  for (const d of daily.slice(-5)) {
-    const steps = [];
-    for (let m = 540; m < 690; m += 5) steps.push(m);
-    for (let m = 750; m < 930; m += 5) steps.push(m);
-    let p = d[1];
-    const walk = steps.map(() => (p *= 1 + (rnd() - 0.5) * 0.004));
-    const drift = (d[4] - walk[walk.length - 1]) / walk.length;
+  for (const d of demoDaily(code).slice(-5)) {
     let prev = d[1];
-    steps.forEach((m, i) => {
-      const c = tick(walk[i] + drift * (i + 1));
-      const o = prev;
-      out.push([d[0] + m * 60 - 9 * 3600, o, tick(Math.max(o, c) * (1 + rnd() * 0.0015)), tick(Math.min(o, c) * (1 - rnd() * 0.0015)), c, Math.round(rnd() * 2e5)]);
+    const mins = [];
+    for (let m = 540; m < 690; m += 5) mins.push(m);
+    for (let m = 750; m < 930; m += 5) mins.push(m);
+    mins.forEach((m, i) => {
+      const target = d[1] + ((d[4] - d[1]) * (i + 1)) / mins.length;
+      const c = tick(target * (1 + (rnd() - 0.5) * 0.004));
+      out.push([d[0] + m * 60 - 9 * 3600, prev, tick(Math.max(prev, c) * 1.001), tick(Math.min(prev, c) * 0.999), c, Math.round(rnd() * 2e5)]);
       prev = c;
     });
   }
   return out;
 }
 
-function demoSeries(code, tf) {
-  const daily = demoDaily(code);
-  let bars;
-  if (tf === '1d') bars = daily.slice(-500);
-  else if (tf === '1wk') bars = aggregate(daily, (t) => { const d = new Date(t * 1000); return t - ((d.getUTCDay() + 6) % 7) * 86400; });
-  else if (tf === '1mo') bars = aggregate(daily, (t) => dayKey(t * 1000).slice(0, 7));
-  else bars = demoIntraday(daily, rng(hash(code + 'i')));
-  const last = daily[daily.length - 1];
-  return { bars, meta: { price: last[4], time: last[0] + 6.5 * 3600, prevClose: null, name: '', exchange: 'Tokyo (Demo)' } };
-}
-
-/* ---------------- 公開 API ---------------- */
+/* ======================= 取得処理 ======================= */
 const inflight = new Map();
-
-function ttlFor(tf) { return cfg.ttlMs * (TF[tf]?.ttlMul || 1); }
-
-async function fetchSeries(code, tf) {
-  const k = keyOf(code, tf);
-  if (inflight.has(k)) return inflight.get(k);
-  const p = (async () => {
-    let parsed;
-    if (cfg.demo) {
-      await new Promise((r) => setTimeout(r, 120));
-      parsed = demoSeries(code, tf);
-    } else {
-      const t = TF[tf];
-      const path = `/v8/finance/chart/${encodeURIComponent(code)}.T?interval=${t.interval}&range=${t.range}&includePrePost=false`;
-      // Yahoo の窓口 query1 / query2 を交互に試す（片方が混雑・制限中でももう片方で取れることがある）
-      let json;
-      try { json = await fetchJson(YH1 + path); } catch (e1) {
-        await new Promise((r) => setTimeout(r, 800));
-        try { json = await fetchJson(YH2 + path); } catch (e2) { throw new Error(`${e1.message} ／ 予備窓口: ${e2.message}`); }
-      }
-      parsed = parseChart(json, tf);
-    }
-    const entry = { ...parsed, fetchedAt: Date.now() };
-    await putCached(code, tf, entry);
-    if (tf === '1d') storeQuote(code, entry);
-    return entry;
-  })();
-  inflight.set(k, p);
-  try { return await p; } finally { inflight.delete(k); }
+function once(key, fn) {
+  if (inflight.has(key)) return inflight.get(key);
+  const p = fn().finally(() => inflight.delete(key));
+  inflight.set(key, p);
+  return p;
 }
 
-// 指定銘柄の必要な足種をまとめて取得（キャッシュ有効なら API を叩かない）
-// 戻り値: { entries: {tf: entry|null}, fetched: bool, error: Error|null }
-export async function loadSet(code, tfs, { force = false, onEntry = null } = {}) {
+// 日足（10年分）を最新化する。手元にあれば直近1か月分だけ取得して継ぎ足す。
+function refreshBase(code, prio) {
+  return once(keyOf(code, 'base'), () => schedule(prio, async () => {
+    const now = Date.now();
+    if (cfg.demo) {
+      const v = { bars: demoDaily(code), meta: { name: '' }, fetchedAt: now, fullAt: now };
+      await putStored(code, 'base', v);
+      return v;
+    }
+    const base = await getStored(code, 'base');
+    const lastT = base?.bars?.length ? base.bars[base.bars.length - 1][0] * 1000 : 0;
+    const full = !base || !base.bars?.length || now - (base.fullAt || 0) > 30 * 86400e3 || now - lastT > 25 * 86400e3;
+    const parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(code)}.T?interval=1d&range=${full ? '10y' : '1mo'}`));
+    const bars = full ? dedupeDaily(parsed.bars) : mergeTail(base.bars, parsed.bars);
+    const v = { bars, meta: parsed.meta, fetchedAt: now, fullAt: full ? now : base.fullAt };
+    await putStored(code, 'base', v);
+    return v;
+  }));
+}
+
+function refreshIntraday(code, prio) {
+  return once(keyOf(code, '5m'), () => schedule(prio, async () => {
+    const now = Date.now();
+    const bars = cfg.demo ? demoIntraday(code)
+      : parseChart(await fetchYahoo(`/v8/finance/chart/${enc(code)}.T?interval=5m&range=5d`)).bars;
+    const v = { bars, meta: {}, fetchedAt: now };
+    await putStored(code, '5m', v);
+    return v;
+  }));
+}
+
+const kindOf = (tf) => (tf === '5m' ? '5m' : 'base');
+
+// 保存済みデータ（古くても）をすぐ返す
+export async function cachedSet(code, tfs) {
   const entries = {};
+  for (const tf of tfs) entries[tf] = deriveEntry(code, await getStored(code, kindOf(tf)), tf === '5m' ? '1d' : tf);
+  return entries;
+}
+
+// 必要なデータを最新化する。キャッシュが有効なら通信しない。
+// maxAgeMs を指定すると「その時間より新しければ取得しない」（裏での先回り取得用）
+export async function loadSet(code, tfs, { force = false, onEntry = null, prio = PRIO.show, maxAgeMs = null } = {}) {
+  const entries = await cachedSet(code, tfs);
   let fetched = false, error = null;
-  // 公開プロキシは同時アクセスに弱いため、足種ごとに1本ずつ順番に取得する
-  let requested = false;
-  for (const tf of tfs) {
-    const cached = await getCached(code, tf);
-    entries[tf] = cached;
-    if (!force && cached && isFresh(cached.fetchedAt, ttlFor(tf))) continue;
-    if (requested) await new Promise((r) => setTimeout(r, 600));
-    requested = true;
+  const kinds = [...new Set(tfs.map(kindOf))];
+  for (const kind of kinds) {
+    const cur = await getStored(code, kind);
+    const fresh = maxAgeMs != null && marketPhase().open
+      ? cur && Date.now() - cur.fetchedAt < maxAgeMs
+      : cur && isFresh(cur.fetchedAt, cfg.ttlMs);
+    if (!force && fresh) continue;
     try {
-      entries[tf] = await fetchSeries(code, tf);
+      const v = kind === 'base' ? await refreshBase(code, prio) : await refreshIntraday(code, prio);
+      for (const tf of tfs) if (kindOf(tf) === kind) entries[tf] = deriveEntry(code, v, tf === '5m' ? '1d' : tf);
       fetched = true;
       if (onEntry) onEntry({ ...entries });
     } catch (e) {
@@ -332,17 +385,30 @@ export async function loadSet(code, tfs, { force = false, onEntry = null } = {})
   return { entries, fetched, error };
 }
 
-export async function cachedSet(code, tfs) {
-  const entries = {};
-  await Promise.all(tfs.map(async (tf) => { entries[tf] = await getCached(code, tf); }));
-  return entries;
+// 現在値（新規登録時の確認用）
+export function quoteFrom(entry) {
+  if (!entry?.bars?.length) return null;
+  const last = entry.bars[entry.bars.length - 1];
+  return { price: entry.meta?.price ?? last[4], name: entry.meta?.name || '' };
 }
 
 export async function searchRemote(q) {
   if (cfg.demo) return [];
-  const url = `${YH2}/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=15&newsCount=0&lang=ja-JP&region=JP`;
-  const j = await fetchJson(url);
-  return (j.quotes || [])
+  const json = await schedule(PRIO.show, async () => {
+    const order = routeOrder();
+    let last;
+    for (const r of order) {
+      try {
+        const res = await fetch(r.build(`${YH[1]}/v1/finance/search?q=${enc(q)}&quotesCount=15&newsCount=0&lang=ja-JP&region=JP`), { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const t = await res.text();
+        const i = t.indexOf('{');
+        return r.id === 'allorigins-get' ? JSON.parse(JSON.parse(t).contents) : JSON.parse(t.slice(i, t.lastIndexOf('}') + 1));
+      } catch (e) { last = e; }
+    }
+    throw last || new Error('検索失敗');
+  });
+  return (json.quotes || [])
     .filter((x) => typeof x.symbol === 'string' && x.symbol.endsWith('.T'))
     .map((x) => ({ code: x.symbol.slice(0, -2), name: x.shortname || x.longname || '', source: 'Yahoo' }));
 }

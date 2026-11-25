@@ -127,8 +127,8 @@
         <h3>データ取得設定</h3>
         <div class="row">キャッシュ有効時間<div class="seg sm" id="segCache"><button data-v="1">1分</button><button data-v="2">2分</button><button data-v="3">3分</button></div></div>
         <label class="row">事前取得 (切替の何秒前)<input type="number" id="inpPrefetch" min="5" max="60" inputmode="numeric"></label>
-        <label class="col">CORSプロキシURL<input type="url" id="inpProxy" placeholder="https://xxxx.workers.dev/?url={url}" autocomplete="off" spellcheck="false"></label>
-        <label class="row">失敗時に予備プロキシを使う<span class="switch"><input type="checkbox" id="chkFallback"><i></i></span></label>
+        <label class="col">独自プロキシURL（任意・通常は空欄）<input type="url" id="inpProxy" placeholder="https://xxxx.workers.dev/?url={url}" autocomplete="off" spellcheck="false"></label>
+        <label class="row">内蔵の中継経路も使う<span class="switch"><input type="checkbox" id="chkFallback"><i></i></span></label>
         <label class="row">デモデータで表示<span class="switch"><input type="checkbox" id="chkDemo"><i></i></span></label>
         <div class="row"><span class="muted small">保存済みのチャートデータを消去</span><button class="btn sm danger" id="btnClearCache">キャッシュ消去</button></div>
       </section>
