@@ -3,7 +3,7 @@ const H = 3600e3;
 const MIN = 60e3;
 
 // 休場日は js/holidays.js（tools/gen-holidays.py で生成、2040年まで）
-import { JP_HOLIDAYS as HOLIDAYS, US_HOLIDAYS, US_EARLY_CLOSE } from './holidays.js?v=20261125100735';
+import { JP_HOLIDAYS as HOLIDAYS, US_HOLIDAYS, US_EARLY_CLOSE } from './holidays.js?v=20261125101242';
 
 // 前場 9:00-11:30 / 後場 12:30-15:30（分単位）
 const AM = [540, 690];
@@ -65,10 +65,16 @@ export function lastSessionEnd(now = Date.now()) {
 // キャッシュが有効か判定。
 // 取引時間中: 取得から ttlMs 以内なら有効。
 // 時間外: 直近の引け（＋遅延分）以降に取得済みなら価格は変わらないので有効（再取得しない）。
+// 東証のデータは約20分遅れで届くので、「データが動いている時間」は実際の取引時間より20分後ろにずれる
+// （9:20〜11:50、12:50〜15:50）。寄り付き直後の20分や昼休み明けの20分に通信しても値は変わらない。
+export const JP_DELAY_MS = 20 * MIN;
+export function dataLive(now = Date.now(), market = 'JP') {
+  return market === 'US' ? marketPhase(now, 'US').open : marketPhase(now - JP_DELAY_MS, 'JP').open;
+}
 export function isFresh(fetchedAt, ttlMs, now = Date.now(), market = 'JP') {
   if (!fetchedAt) return false;
-  if (!marketPhase(now, market).open) {
-    const end = market === 'US' ? usLastClose(now) : lastSessionEnd(now);
+  if (!dataLive(now, market)) {
+    const end = market === 'US' ? usLastClose(now) : lastSessionEnd(now - JP_DELAY_MS);
     const settle = end + (market === 'US' ? US_SETTLE_MS : SETTLE_MS);
     if (now >= settle) return fetchedAt >= settle;
   }

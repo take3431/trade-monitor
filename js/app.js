@@ -1,7 +1,7 @@
-import * as M from './market.js?v=20261125100735';
-import * as D from './data.js?v=20261125100735';
-import { Stage, themeColors } from './chart.js?v=20261125100735';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125100735';
+import * as M from './market.js?v=20261125101242';
+import * as D from './data.js?v=20261125101242';
+import { Stage, themeColors } from './chart.js?v=20261125101242';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125101242';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -138,7 +138,7 @@ async function show(code, { nav = false, force = false, retry = false } = {}) {
   setLoading(false);
   if (seq !== st.seq) return;
   st.lastError = res.error;
-  if (res.fetched || !hasCache || isSame) {
+  if ((res.fetched && res.changed) || !hasCache) {
     const onFront = stages[front].code === code;
     if (onFront) render(stages[front], item, res.entries, userIsTouching());
     else await present(item, res.entries, seq, false);
@@ -236,14 +236,7 @@ async function warmTick(now) {
       if (tfs.every((tf) => c[tf]?.bars?.length)) haveData.add(x.code);
       else { target = x.code; break; }
     }
-    // 未取得が無ければ、この先表示する3銘柄だけ最新化（場中に10分以上古いもの）
-    if (!target) {
-      for (const code of upcoming(3)) {
-        const c = await D.cachedSet(code, tfs);
-        const at = Math.min(...tfs.map((tf) => c[tf]?.fetchedAt || 0));
-        if (M.marketPhase(now, marketOf(code)).open && now - at > WARM_MAX_AGE) { target = code; break; }
-      }
-    }
+    // 最新化は「切替30秒前の事前取得」が行うので、裏では未取得の銘柄だけを取りに行く
     if (!target) return;
     const r = await D.loadSet(target, tfs, { prio: D.PRIO.warm, maxAgeMs: WARM_MAX_AGE });
     if (r.fetched && !r.error) haveData.add(target);
@@ -708,7 +701,7 @@ function renderNet() {
     }
   }
   const missing = list.filter((x) => x.enabled && !haveData.has(x.code)).length;
-  lines.push(missing ? `データ未取得の銘柄：約${missing}件を8秒に1件ずつ取得中` : '全銘柄のデータを取得済み（裏での取得は次の3銘柄の最新化のみ）');
+  lines.push(missing ? `データ未取得の銘柄：約${missing}件を8秒に1件ずつ取得中` : '全銘柄のデータを取得済み（裏での取得はありません）');
   $('netNow').innerHTML = lines.map((l) => `<div>・${l}</div>`).join('');
   const log = D.netLog();
   $('netLogBody').innerHTML = log.length ? log.slice(0, 40).map((x) => `

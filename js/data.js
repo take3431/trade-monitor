@@ -8,8 +8,8 @@
 //     以後は直近1か月分の小さなデータだけを取りに行き、手元のデータに継ぎ足す。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, marketPhase } from './market.js?v=20261125100735';
-import { isUS } from './names.js?v=20261125100735';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261125101242';
+import { isUS } from './names.js?v=20261125101242';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = (code) => (isUS(code) ? code : `${code}.T`);
@@ -94,7 +94,7 @@ export function routeStatus() {
   return [customRoute(), ...ROUTES].filter(Boolean).map((r) => `${r.label}: ${Math.round(r.score * 100)}%${cooldown.get(r.id) > Date.now() ? '（休止中）' : ''}`);
 }
 
-const HEDGE_MS = 4000;
+const HEDGE_MS = 6000;
 let hostFlip = 0;
 
 // 1件の Yahoo API 呼び出しを、経路を切り替えながら成功するまで試みる
@@ -179,7 +179,8 @@ function fetchYahoo(path, ctx = {}) {
       })();
     };
     launch();
-    hedge = setTimeout(launch, HEDGE_MS); // 遅いときは次の経路も並行して試す
+    // 遅いときは次の経路も並行して試す。ただし予備の経路が最近うまくいっている場合だけ（無駄打ちしない）
+    hedge = setTimeout(() => { if (order[idx] && order[idx].score >= 0.5) launch(); }, HEDGE_MS);
   });
 }
 
@@ -432,6 +433,14 @@ function refreshBase(code, prio) {
     const parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=${range}`,
       { code, what: full ? '日足10年分（初回）' : `日足の更新（直近${range === '5d' ? '5日' : '1か月'}）` }));
     const daily = full ? dedupeDaily(parsed.bars) : mergeTail(base.bars, parsed.bars);
+    // 値が前回と同じ（取引が無かった等）なら、保存済みのデータは書き換えず取得時刻だけ更新する
+    const lastOld = base?.bars?.[base.bars.length - 1];
+    const lastNew = daily[daily.length - 1];
+    if (!full && lastOld && lastNew && base.bars.length && lastOld.join() === lastNew.join() && base.meta?.price === parsed.meta.price) {
+      const same = { ...base, fetchedAt: now, unchanged: true };
+      mem.set(keyOf(code, 'base'), same);
+      return same;
+    }
     const v = { ...packBase(daily, base, full), meta: parsed.meta, fetchedAt: now, fullAt: full ? now : base.fullAt };
     await putStored(code, 'base', v);
     return v;
@@ -467,7 +476,7 @@ export function failureOf(code) { return failures.get(code) || null; }
 
 export async function loadSet(code, tfs, { force = false, onEntry = null, prio = PRIO.show, maxAgeMs = null } = {}) {
   const entries = await cachedSet(code, tfs);
-  let fetched = false, error = null;
+  let fetched = false, error = null, changed = false;
   const kinds = [...new Set(tfs.map(kindOf))];
   const market = mkt(code);
   const f = failures.get(code);
@@ -477,7 +486,7 @@ export async function loadSet(code, tfs, { force = false, onEntry = null, prio =
   }
   for (const kind of kinds) {
     const cur = await getStored(code, kind);
-    const fresh = maxAgeMs != null && marketPhase(Date.now(), market).open
+    const fresh = maxAgeMs != null && dataLive(Date.now(), market)
       ? cur && Date.now() - cur.fetchedAt < maxAgeMs
       : cur && isFresh(cur.fetchedAt, cfg.ttlMs, Date.now(), market);
     if (!force && fresh) continue;
@@ -485,6 +494,7 @@ export async function loadSet(code, tfs, { force = false, onEntry = null, prio =
       const v = kind === 'base' ? await refreshBase(code, prio) : await refreshIntraday(code, prio);
       for (const tf of tfs) if (kindOf(tf) === kind) entries[tf] = deriveEntry(code, v, tf === '5m' ? '1d' : tf);
       if (kind === 'base') entries.quote = quoteOfBase(v);
+      if (!v.unchanged) changed = true;
       fetched = true;
       if (onEntry) onEntry({ ...entries });
     } catch (e) {
@@ -497,7 +507,7 @@ export async function loadSet(code, tfs, { force = false, onEntry = null, prio =
   } else if (fetched) {
     failures.delete(code);
   }
-  return { entries, fetched, error };
+  return { entries, fetched, changed, error };
 }
 
 // 現在値（新規登録時の確認用）
@@ -523,9 +533,12 @@ function quoteOfBase(base) {
   return { price, chg: price - prev, pct: prev ? ((price - prev) / prev) * 100 : null };
 }
 
+const searchCache = new Map(); // 検索語 -> { at, json }
 export async function searchRemote(q) {
   if (cfg.demo) return [];
-  const json = await schedule(PRIO.show, async () => {
+  const key = q.trim().toLowerCase();
+  const hit = searchCache.get(key);
+  const json = hit && Date.now() - hit.at < 10 * 60e3 ? hit.json : await schedule(PRIO.show, async () => {
     const order = routeOrder();
     let last;
     for (const r of order) {
@@ -543,6 +556,7 @@ export async function searchRemote(q) {
     }
     throw last || new Error('検索失敗');
   });
+  if (!hit || hit.json !== json) searchCache.set(key, { at: Date.now(), json });
   return (json.quotes || [])
     .filter((x) => typeof x.symbol === 'string' && /^(EQUITY|ETF)$/.test(x.quoteType || '')
       && (x.symbol.endsWith('.T') || /^[A-Z][A-Z0-9]{0,5}(-[A-Z])?$/.test(x.symbol)))
