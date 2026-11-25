@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261125154317';
-import * as D from './data.js?v=20261125154317';
-import { Stage, themeColors } from './chart.js?v=20261125154317';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125154317';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125154317';
+import * as M from './market.js?v=20261125155918';
+import * as D from './data.js?v=20261125155918';
+import { Stage, themeColors } from './chart.js?v=20261125155918';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125155918';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125155918';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -43,7 +43,7 @@ function cleanSettings(raw) {
   const s = { ...DEFAULTS, ind: { ...DEFAULTS.ind } };
   if (!raw || typeof raw !== 'object') return s;
   const int = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Math.round(Number(v)))) : d);
-  s.interval = int(raw.interval, 10, 300, DEFAULTS.interval);
+  s.interval = int(raw.interval, 5, 300, DEFAULTS.interval);
   s.offHours = raw.offHours === 'stop' ? 'stop' : 'continue';
   s.leftTf = TF_KEYS.includes(raw.leftTf) ? raw.leftTf : DEFAULTS.leftTf;
   s.rightTf = TF_KEYS.includes(raw.rightTf) ? raw.rightTf : DEFAULTS.rightTf;
@@ -137,11 +137,15 @@ function dataPlan(n = enabledCount(), interval = settings.interval) {
   const liveKB = (ttl) => { const r = Math.min(displays, (n * LIVE_MIN) / ttl); return r * 1.23 + Math.max(LIVE_MIN / ttl, r / 20) * 1.4; };
   // 始値はなるべく良い取り方で。目標に収まらなければ粗くし、上限も超えるときだけ更新間隔を延ばす
   const target = n <= 200 ? DATA_LIMIT_KB : DATA_TARGET_KB;
+  // 切り替えが20秒より速いときは、同じ銘柄を表示するたびには更新しない（k回の表示に1回。5秒なら4回に1回）。
+  // 銘柄が少なくても、切り替えを速くしただけで通信が増えないようにする
+  const skip = interval < 20 ? Math.ceil(20 / interval) : 1;
+  const baseTtl = Math.max(tierMin, skip > 1 ? ((skip - 0.5) * n * interval) / 60 : 0);
   let mode = modes[modes.length - 1];
-  for (const m of modes) if (fixed(m) + liveKB(tierMin) <= target) { mode = m; break; }
-  let ttl = tierMin;
+  for (const m of modes) if (fixed(m) + liveKB(baseTtl) <= target) { mode = m; break; }
+  let ttl = baseTtl;
   while (fixed(mode) + liveKB(ttl) > DATA_LIMIT_KB && ttl < LIVE_MIN) ttl = Math.ceil(ttl * 1.25);
-  return { ttlMin: ttl, openMode: mode, fullDays, estKB: Math.round(fixed(mode) + liveKB(ttl)) };
+  return { ttlMin: ttl, skip, openMode: mode, fullDays, estKB: Math.round(fixed(mode) + liveKB(ttl)) };
 }
 const approxMode = () => dataPlan().openMode !== 'exact';
 const OPEN_LABEL = { exact: '正確（1銘柄ずつ）', '1m': '最初の1分の値', '5m': '最初の5分の値', '15m': '最初の15分の値', prev: '前日の終値で代用' };
@@ -163,7 +167,8 @@ function applyData() {
 function renderPlan(plan) {
   const n = enabledCount();
   const set = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
-  set('specLive', `取引時間中、同じ銘柄は${plan.ttlMin}分ごとに最新化（表示対象${n}銘柄・切り替え${settings.interval}秒に合わせて自動で調整）`);
+  const t = plan.ttlMin < 10 ? Math.round(plan.ttlMin * 10) / 10 : Math.round(plan.ttlMin);
+  set('specLive', `取引時間中、同じ銘柄は${t}分ごとに最新化（表示対象${n}銘柄・切り替え${settings.interval}秒に合わせて自動で調整${plan.skip > 1 ? `。切り替えが速いので、毎回の表示では更新しない` : ''}）`);
   set('specOpen', OPEN_LABEL[plan.openMode]);
   set('specEst', `約${(plan.estKB / 1000).toFixed(1)}MB（東証・取引日に1日中表示した場合の目安。目標3.5MB・上限4MB）`);
 }
@@ -501,7 +506,7 @@ function fillSettings() {
 function formValues() {
   const s = {};
   const clamp = (v, lo, hi, d) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
-  s.interval = clamp($('inpInterval').value, 10, 300, 30);
+  s.interval = clamp($('inpInterval').value, 5, 300, 30);
   s.offHours = $('selOffHours').value;
   s.leftTf = $('segLeftTf').dataset.v; s.rightTf = $('segRightTf').dataset.v;
   s.leftBars = Number($('selLeftBars').value); s.rightBars = Number($('selRightBars').value);
