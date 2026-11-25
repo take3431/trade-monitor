@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261125130919';
-import * as D from './data.js?v=20261125130919';
-import { Stage, themeColors } from './chart.js?v=20261125130919';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125130919';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125130919';
+import * as M from './market.js?v=20261125135012';
+import * as D from './data.js?v=20261125135012';
+import { Stage, themeColors } from './chart.js?v=20261125135012';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125135012';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125135012';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -484,8 +484,9 @@ function renderList() {
       <td class="c-del"><button class="icon-btn danger del" aria-label="削除"><svg class="ico"><use href="#i-trash"/></svg></button><button class="icon-btn clr" aria-label="${esc(x.code)} の設定株価を消す" title="設定株価を消す"><svg class="ico"><use href="#i-eraser"/></svg></button></td>
     </tr>`).join('');
   $('btnAdd').disabled = list.length >= MAX_SYMBOLS;
-  for (const x of list) updateAlertRow(x.code);
-  if (alertMode) fillPrices();
+  const rows = $('listBody').children;
+  list.forEach((x, i) => updateAlertRow(x.code, rows[i], x));
+  if (alertMode) fillQuotes();
 }
 
 function renumber() {
@@ -534,28 +535,41 @@ $('listBody').addEventListener('click', (e) => {
    ・判定に使う株価は、いつもの表示・先読み・まとめて取得で届いたものだけ（アラートのための通信はしない）
    ・前回の現在値 → 今回の現在値 の間に設定株価をまたいだら通知し、その銘柄のアラートを自動で OFF にする
    ・設定株価は全角・半角どちらでも入力でき、表示は半角（桁区切り付き）にそろえる */
-const PRICE_KEY = DEMO ? 'tm.prices.demo.v1' : 'tm.prices.v1';
-const prices = load(PRICE_KEY, {}) || {}; // code -> 最後に届いた現在値
-let savePricesTimer = null;
-function savePrices() {
-  clearTimeout(savePricesTimer);
-  savePricesTimer = setTimeout(() => {
+// 銘柄ごとの最新の現在値・前日比・データの時刻（アラート判定・現在値の列・全銘柄一覧で使う小さな控え）
+//  日足のデータ（1銘柄あたり数十KB）を毎回読まずに済むよう、届いた値だけを覚えておく
+const QUOTE_KEY = DEMO ? 'tm.quotecache.demo.v1' : 'tm.quotecache.v1';
+const quotes = load(QUOTE_KEY, null) || {};
+{
+  // 旧版の控え（現在値だけ）を引き継ぐ
+  const old = load(DEMO ? 'tm.prices.demo.v1' : 'tm.prices.v1', null);
+  if (old) {
+    for (const [k, v] of Object.entries(old)) if (!quotes[k] && Number.isFinite(v)) quotes[k] = { price: v };
+    try { localStorage.removeItem(DEMO ? 'tm.prices.demo.v1' : 'tm.prices.v1'); } catch { /* ignore */ }
+  }
+}
+const priceOf = (code) => quotes[code]?.price ?? null;
+let saveQuotesTimer = null;
+function saveQuotes() {
+  clearTimeout(saveQuotesTimer);
+  saveQuotesTimer = setTimeout(() => {
     const keep = new Set(list.map((x) => x.code));
-    for (const k of Object.keys(prices)) if (!keep.has(k)) delete prices[k];
-    save(PRICE_KEY, prices);
-  }, 1000);
+    for (const k of Object.keys(quotes)) if (!keep.has(k)) delete quotes[k];
+    save(QUOTE_KEY, quotes);
+  }, 1500);
 }
-// 現在値が分からない銘柄は、保存済みのデータから読む（通信しない）
-async function ensurePrice(code) {
-  if (prices[code] != null) return;
-  const p = await D.peekPrice(code);
-  if (p != null && prices[code] == null) { prices[code] = p; savePrices(); updateAlertRow(code); }
+const slimQuote = (q) => ({ price: q.price, chg: q.chg ?? null, pct: q.pct ?? null, time: q.time ?? null });
+// 控えに無い（または前日比の無い旧版の控えしかない）銘柄だけ、保存済みのデータから1件ずつ読む（通信しない）
+async function ensureQuote(code) {
+  const q = quotes[code];
+  if (q && q.pct !== undefined) return;
+  const v = await D.peekQuote(code);
+  if (v?.price != null && quotes[code] === q) { quotes[code] = slimQuote(v); saveQuotes(); updateAlertRow(code); if (overviewMode) scheduleOverview(); }
 }
-let fillingPrices = false;
-async function fillPrices() {
-  if (fillingPrices) return;
-  fillingPrices = true;
-  try { for (const x of [...list]) await ensurePrice(x.code); } finally { fillingPrices = false; }
+let fillingQuotes = false;
+async function fillQuotes() {
+  if (fillingQuotes) return;
+  fillingQuotes = true;
+  try { for (const x of [...list]) await ensureQuote(x.code); } finally { fillingQuotes = false; }
 }
 
 let alertMode = false;
@@ -567,7 +581,7 @@ function setAlertMode(on) {
   $('chkAlertPopup').checked = settings.alertPopup;
   $('chkAlertSound').checked = settings.alertSound;
   $('selAlertSec').value = [5, 10, 15, 20, 30, 60].includes(settings.alertSec) ? String(settings.alertSec) : '10';
-  fillPrices();
+  fillQuotes();
 }
 $('btnAlertMode').addEventListener('click', () => setAlertMode(!alertMode));
 $('btnAlertBack').addEventListener('click', () => setAlertMode(false));
@@ -577,12 +591,10 @@ $('chkAlertSound').addEventListener('change', (e) => { settings.alertSound = e.t
 $('selAlertSec').addEventListener('change', (e) => { settings.alertSec = Number(e.target.value) || DEFAULTS.alertSec; save(KEY.settings, settings); });
 
 const rowOf = (code) => $('listBody').querySelector(`tr[data-code="${CSS.escape(code)}"]`);
-function updateAlertRow(code) {
-  const tr = rowOf(code);
-  const x = list.find((i) => i.code === code);
+function updateAlertRow(code, tr = rowOf(code), x = list.find((i) => i.code === code)) {
   if (!tr || !x) return;
   const us = isUS(code);
-  const cur = prices[code];
+  const cur = priceOf(code);
   tr.querySelector('.c-price').textContent = cur != null ? fmtNum(cur, us) : '—';
   const on = !!x.alertOn;
   tr.querySelector('.alert-tg').checked = on;
@@ -620,7 +632,7 @@ $('listBody').addEventListener('change', (e) => {
     saveList();
     updateAlertRow(x.code);
     if (x.alertOn) {
-      ensurePrice(x.code);
+      ensureQuote(x.code);
       if (!x.alertPrice) setTimeout(() => tr.querySelector('.tgt').focus(), 0);
     }
   } else if (e.target.classList.contains('tgt')) {
@@ -638,10 +650,10 @@ function fireAlert(x, dir, price) {
   if (settings.alertPopup) showAlertCard({ code: x.code, name: x.name, target, price, dir, at: Date.now(), us: isUS(x.code) });
   if (settings.alertSound) playAlarm(settings.alertSec); // 設定した秒数だけ鳴らす（通知を消すと止まる）
 }
-D.onPrice((code, price) => {
-  const prev = prices[code];
-  prices[code] = price;
-  savePrices();
+D.onPrice((code, price, q) => {
+  const prev = priceOf(code);
+  quotes[code] = slimQuote(q);
+  saveQuotes();
   const x = list.find((i) => i.code === code);
   if (x?.alertOn && x.alertPrice) {
     const dir = crossed(prev, price, x.alertPrice);
@@ -651,27 +663,29 @@ D.onPrice((code, price) => {
   if (overviewMode) updateTile(code);
 });
 initAlertCards($('alertStack'));
-for (const x of list) if (x.alertOn) ensurePrice(x.code);
+(async () => { for (const x of list) if (x.alertOn) await ensureQuote(x.code); })();
 
 /* ---------------- 全銘柄一覧（タイル表示） ----------------
    保存済みのデータから現在値・前日比を並べる（この画面のための通信はしない）。
    表示中に新しい株価が届いたタイルは、その場で書き換える。 */
 let overviewMode = false;
 let ovSort = 'list';
-const ovQuotes = new Map(); // code -> { price, chg, pct, time }
+let ovTimer = null;
+// 描き直しはまとめて1回に（株価がいくつも続けて届いたときに、何度も描き直さないように）
+function scheduleOverview() { clearTimeout(ovTimer); ovTimer = setTimeout(() => { if (overviewMode) renderOverview(); }, 300); }
 function setOverview(on) {
   overviewMode = on;
   $('settings').classList.toggle('overview-mode', on);
   if (!on) return;
   seg('segOvSort', ovSort, (v) => { ovSort = v; renderOverview(); });
   renderOverview();
-  Promise.all(list.map(async (x) => ovQuotes.set(x.code, await D.peekQuote(x.code)))).then(() => { if (overviewMode) renderOverview(); });
+  fillQuotes(); // 控えに無い銘柄だけ読み、そろった分から表示する
 }
 $('btnOverview').addEventListener('click', () => setOverview(true));
 $('btnOvBack').addEventListener('click', () => setOverview(false));
 const ovMoney = (v, us) => (v == null ? '—' : us ? `US$${fmtNum(v, true)}` : fmtNum(v));
 function tileHtml(x) {
-  const q = ovQuotes.get(x.code);
+  const q = quotes[x.code];
   const us = isUS(x.code);
   const pct = q?.pct;
   const dir = pct == null ? '' : pct > 0 ? 'up' : pct < 0 ? 'down' : '';
@@ -690,7 +704,7 @@ function tileHtml(x) {
 }
 function renderOverview() {
   const rows = [...list];
-  const key = (x) => ovQuotes.get(x.code)?.pct;
+  const key = (x) => quotes[x.code]?.pct;
   if (ovSort !== 'list') {
     rows.sort((a, b) => {
       const pa = key(a), pb = key(b);
@@ -705,12 +719,10 @@ function renderOverview() {
   $('ovCount').textContent = `(${list.length}銘柄)`;
   $('ovSum').innerHTML = `<span>値上がり <b class="up">${up}</b></span><span>値下がり <b class="down">${down}</b></span><span>変わらず <b>${flat}</b></span>`;
 }
-async function updateTile(code) {
+function updateTile(code) {
   const x = list.find((i) => i.code === code);
-  if (!x) return;
-  ovQuotes.set(code, await D.peekQuote(code));
-  if (!overviewMode) return;
-  if (ovSort !== 'list') { renderOverview(); return; } // 並び順が変わるので全体を描き直す
+  if (!x || !overviewMode) return;
+  if (ovSort !== 'list') { scheduleOverview(); return; } // 並び順が変わるので全体を描き直す
   const el = $('ovGrid').querySelector(`[data-code="${CSS.escape(code)}"]`);
   if (el) el.outerHTML = tileHtml(x);
 }

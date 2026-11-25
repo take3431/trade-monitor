@@ -1,7 +1,7 @@
 // 表示レイヤー（ステージ）とチャート描画
 // ステージを2枚重ねておき、非表示側に描画してから切り替えることでチラつきを防ぐ。
-import { TF } from './data.js?v=20261125130919';
-import { fmtStamp } from './market.js?v=20261125130919';
+import { TF } from './data.js?v=20261125135012';
+import { fmtStamp } from './market.js?v=20261125135012';
 
 const LC = window.LightweightCharts;
 const JST = 9 * 3600;
@@ -139,12 +139,24 @@ class Pane {
     const t = TF[tf];
     this.titleEl.textContent = t.title;
     const raw = entry?.bars || [];
+    this.msg.hidden = raw.length > 0;
+    this.msg.textContent = loading ? 'チャートデータ読込中…' : 'チャートデータ未取得（自動で再取得します）';
+    // 同じ銘柄・同じ足種・同じデータなら、描き直さずに表示範囲だけ整える（切替のたびの無駄な計算を省く）
+    if (raw.length && raw === this.raw && this.tf === tf && this.code === label) {
+      if (!keepRange) {
+        this.resetView();
+        const n = this.bars.length;
+        if (visibleBars > 0 && n > visibleBars) this.chart.timeScale().setVisibleLogicalRange({ from: n - visibleBars, to: n + 2 });
+        else this.chart.timeScale().fitContent();
+      }
+      this.updateLegend(null);
+      return;
+    }
+    this.raw = raw;
     const bars = raw.map((b) => ({ time: b[0] + JST, open: b[1], high: b[2], low: b[3], close: b[4], volume: b[5] }));
     this.bars = bars;
     this.label = `${label}, ${t.short}, ${this.exch || 'TSE'}`;
     this.maLen = t.ma;
-    this.msg.hidden = bars.length > 0;
-    this.msg.textContent = loading ? 'チャートデータ読込中…' : 'チャートデータ未取得（自動で再取得します）';
     this.chart.applyOptions({ timeScale: { timeVisible: tf === '5m', secondsVisible: false } });
 
     const s = this.s;
