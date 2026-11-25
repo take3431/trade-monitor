@@ -11,7 +11,7 @@
 <title>TRADE MONITOR</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon-180.png">
 <link rel="stylesheet" href="css/style.css">
 <script src="vendor/lightweight-charts.standalone.production.js"></script>
 <script type="module" src="js/app.js"></script>
@@ -24,6 +24,8 @@
   <symbol id="i-prev" viewBox="0 0 24 24"><path d="M12 6l-7 6 7 6zM20 6l-7 6 7 6z" fill="currentColor"/></symbol>
   <symbol id="i-next" viewBox="0 0 24 24"><path d="M12 6l7 6-7 6zM4 6l7 6-7 6z" fill="currentColor"/></symbol>
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-expand" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-shrink" viewBox="0 0 24 24"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   <symbol id="i-grip" viewBox="0 0 24 24"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></symbol>
@@ -52,6 +54,7 @@
       <button class="tbtn icon" id="btnPrev" title="前の銘柄 (←)"><svg class="ico"><use href="#i-prev"/></svg></button>
       <button class="tbtn icon" id="btnNext" title="次の銘柄 (→)"><svg class="ico"><use href="#i-next"/></svg></button>
     </div>
+    <button class="icon-btn" id="btnFull" aria-label="全画面表示" title="全画面表示" hidden><svg class="ico"><use id="fullUse" href="#i-expand"/></svg></button>
     <button class="icon-btn" id="btnMenu" aria-label="設定を開く"><svg class="ico"><use href="#i-menu"/></svg></button>
   </div>
   <div class="settings-only settings-title">
@@ -59,6 +62,11 @@
     <button class="icon-btn" id="btnClose" aria-label="保存して戻る"><svg class="ico"><use href="#i-close"/></svg></button>
   </div>
 </header>
+
+<div id="homeHint" class="home-hint" hidden>
+  <span>上のバーを消して画面を広く使うには：共有ボタン <b>⬆︎</b> →「<b>ホーム画面に追加</b>」→ ホーム画面のアイコンから起動してください。</span>
+  <button type="button" class="btn sm" id="btnHintClose">閉じる</button>
+</div>
 
 <main id="monitor">
   <div id="stageA"></div>
@@ -124,6 +132,11 @@
         <label class="row">画面スリープ防止<span class="switch"><input type="checkbox" id="chkWake"><i></i></span></label>
       </section>
 
+      <section id="transferSection">
+        <h3>ホーム画面アプリへの引き継ぎ</h3>
+        <p class="muted small">Safari とホーム画面のアプリでは、保存場所が別になります。移すときは、Safari 側で「コピー」→ アプリ側で「貼り付け」をしてください。</p>
+        <div class="row"><button class="btn sm" id="btnExport">銘柄と設定をコピー</button><button class="btn sm" id="btnImport">貼り付けて復元</button></div>
+      </section>
       <p class="muted small attribution">Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a></p>
     </div>
     <button class="btn primary block" id="btnSave" hidden>設定を保存して戻る</button>

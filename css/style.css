@@ -298,3 +298,9 @@ tr.drag-placeholder td > * { visibility: hidden; }
 .net-rules { font-size: .8rem; color: var(--muted); }
 .net-rules summary { cursor: pointer; color: var(--text); }
 .net-rules ul { margin: .4rem 0 0; padding-left: 1.2rem; line-height: 1.6; }
+
+/* ===== ホーム画面追加の案内 ===== */
+.home-hint { display: flex; align-items: center; gap: .8rem; justify-content: space-between; padding: .45rem .8rem; font-size: .82rem;
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface)); border-bottom: 1px solid var(--border); }
+.home-hint[hidden] { display: none; }
+#transferSection .row { justify-content: flex-start; }

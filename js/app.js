@@ -769,3 +769,53 @@ setInterval(async () => {
   const allClosed = !marketsInList().some((m) => M.marketPhase(now, m).open);
   if (now - BOOT_AT > 12 * 3600e3 && allClosed && !userIsTouching() && !netDlg.open && !dlg.open) location.reload();
 }, 5000);
+
+/* ---------------- 全画面表示・ホーム画面アプリ ----------------
+   ・ホーム画面に追加して起動した場合は、最初からバーが無いのでボタンも案内も出さない
+   ・Safari で開いている場合は、全画面ボタン（対応端末のみ）と、ホーム画面追加の案内を出す */
+const standalone = window.navigator.standalone === true || matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches;
+const root = document.documentElement;
+const fsSupported = !!(root.requestFullscreen || root.webkitRequestFullscreen);
+const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement;
+function syncFullBtn() {
+  $('fullUse').setAttribute('href', fsElement() ? '#i-shrink' : '#i-expand');
+  $('btnFull').title = fsElement() ? '全画面を終了' : '全画面表示';
+}
+if (!standalone && fsSupported) {
+  $('btnFull').hidden = false;
+  $('btnFull').addEventListener('click', () => {
+    if (fsElement()) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    else (root.requestFullscreen || root.webkitRequestFullscreen).call(root);
+  });
+  ['fullscreenchange', 'webkitfullscreenchange'].forEach((ev) => document.addEventListener(ev, () => {
+    syncFullBtn();
+    setTimeout(() => stages.forEach((s) => s.fitTitle()), 300);
+  }));
+}
+const HINT_KEY = 'tm.hint.home.v1';
+const isTouchDevice = navigator.maxTouchPoints > 0;
+if (!standalone && isTouchDevice && !load(HINT_KEY, false)) $('homeHint').hidden = false;
+$('btnHintClose').addEventListener('click', () => { $('homeHint').hidden = true; save(HINT_KEY, true); });
+
+// 銘柄リストと設定の引き継ぎ（クリップボード経由）
+$('btnExport').addEventListener('click', async () => {
+  const text = JSON.stringify({ app: 'trade-monitor', v: 1, list, settings });
+  try { await navigator.clipboard.writeText(text); toast(`${list.length}銘柄と設定をコピーしました`); }
+  catch { prompt('次の文字をすべてコピーしてください', text); }
+});
+$('btnImport').addEventListener('click', () => {
+  const text = prompt('「銘柄と設定をコピー」でコピーした文字を貼り付けてください');
+  if (!text) return;
+  try {
+    const d = JSON.parse(text);
+    if (d.app !== 'trade-monitor' || !Array.isArray(d.list)) throw new Error();
+    if (!confirm(`${d.list.length}銘柄と設定を読み込みます。今の銘柄リストは置き換わります。よろしいですか？`)) return;
+    list = d.list.filter((x) => x && typeof x.code === 'string').slice(0, MAX_SYMBOLS);
+    Object.assign(settings, d.settings || {});
+    save(KEY.settings, settings);
+    saveList();
+    fillSettings();
+    renderList();
+    toast('読み込みました。「設定を保存して戻る」で反映されます');
+  } catch { alert('読み込めませんでした。コピーした文字をそのまま貼り付けてください。'); }
+});
