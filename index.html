@@ -64,8 +64,11 @@
 </header>
 
 <div id="homeHint" class="home-hint" hidden>
-  <span>上のバーを消して画面を広く使うには：共有ボタン <b>⬆︎</b> →「<b>ホーム画面に追加</b>」→ ホーム画面のアイコンから起動してください。</span>
-  <button type="button" class="btn sm" id="btnHintClose">閉じる</button>
+  <span id="hintText"></span>
+  <span class="hint-actions">
+    <button type="button" class="btn sm primary" id="btnInstall" hidden>アプリとしてインストール</button>
+    <button type="button" class="btn sm" id="btnHintClose">閉じる</button>
+  </span>
 </div>
 
 <main id="monitor">
@@ -132,7 +135,7 @@
         <label class="row">画面スリープ防止<span class="switch"><input type="checkbox" id="chkWake"><i></i></span></label>
       </section>
 
-      <section id="transferSection">
+      <section id="transferSection" hidden>
         <h3>ホーム画面アプリへの引き継ぎ</h3>
         <p class="muted small">Safari とホーム画面のアプリでは、保存場所が別になります。移すときは、Safari 側で「コピー」→ アプリ側で「貼り付け」をしてください。</p>
         <div class="row"><button class="btn sm" id="btnExport">銘柄と設定をコピー</button><button class="btn sm" id="btnImport">貼り付けて復元</button></div>

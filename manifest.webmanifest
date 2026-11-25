@@ -1,7 +1,9 @@
 {
   "name": "TRADE MONITOR",
   "short_name": "TradeMonitor",
+  "id": "./",
   "start_url": "./",
+  "scope": "./",
   "display": "fullscreen",
   "orientation": "landscape",
   "background_color": "#0d1117",

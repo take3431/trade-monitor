@@ -304,3 +304,4 @@ tr.drag-placeholder td > * { visibility: hidden; }
   background: color-mix(in srgb, var(--accent) 16%, var(--surface)); border-bottom: 1px solid var(--border); }
 .home-hint[hidden] { display: none; }
 #transferSection .row { justify-content: flex-start; }
+.hint-actions { display: flex; gap: .5rem; flex: none; }

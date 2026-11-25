@@ -792,9 +792,37 @@ if (!standalone && fsSupported) {
     setTimeout(() => stages.forEach((s) => s.fitTitle()), 300);
   }));
 }
-const HINT_KEY = 'tm.hint.home.v1';
+const HINT_KEY = 'tm.hint.home.v2';
 const isTouchDevice = navigator.maxTouchPoints > 0;
+const isAndroid = /Android/i.test(navigator.userAgent);
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && isTouchDevice);
+$('hintText').innerHTML = isAndroid
+  ? '上のバーを消して画面を広く使うには：Chrome 右上の <b>︙</b> →「<b>アプリをインストール</b>」（または「ホーム画面に追加」）→ ホーム画面のアイコンから起動してください。今すぐ広くするには右上の <b>⛶</b> ボタン。'
+  : '上のバーを消して画面を広く使うには：共有ボタン <b>⬆︎</b> →「<b>ホーム画面に追加</b>」→ ホーム画面のアイコンから起動してください。';
 if (!standalone && isTouchDevice && !load(HINT_KEY, false)) $('homeHint').hidden = false;
+// iPad/iPhone はホーム画面アプリと Safari で保存場所が別なので、引き継ぎ機能を出す（Android は共通なので不要）
+if (isIOS) $('transferSection').hidden = false;
+
+// Android の Chrome：ボタン1つでアプリとしてインストールできるようにする
+let installEvent = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installEvent = e;
+  $('btnInstall').hidden = false;
+  if (!standalone && !load(HINT_KEY, false)) $('homeHint').hidden = false;
+});
+$('btnInstall').addEventListener('click', async () => {
+  if (!installEvent) return;
+  installEvent.prompt();
+  const r = await installEvent.userChoice.catch(() => null);
+  installEvent = null;
+  $('btnInstall').hidden = true;
+  if (r?.outcome === 'accepted') { $('homeHint').hidden = true; save(HINT_KEY, true); toast('インストールしました。ホーム画面のアイコンから起動してください'); }
+});
+window.addEventListener('appinstalled', () => { $('homeHint').hidden = true; save(HINT_KEY, true); });
+
+// インストール可能にするための最小限のサービスワーカー（キャッシュはしない＝常に最新版を表示）
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 $('btnHintClose').addEventListener('click', () => { $('homeHint').hidden = true; save(HINT_KEY, true); });
 
 // 銘柄リストと設定の引き継ぎ（クリップボード経由）
