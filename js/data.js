@@ -9,8 +9,8 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261125145412';
-import { yahooSymbol, marketOfCode } from './names.js?v=20261125145412';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261125150209';
+import { yahooSymbol, marketOfCode } from './names.js?v=20261125150209';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = yahooSymbol;
@@ -103,12 +103,14 @@ let hostFlip = 0;
 /* ======================= 1日の通信回数の上限 =======================
    日本時間0時区切りで数える。上限に達したら、その日は保存済みのデータで表示を続ける。
    ・ふだんの更新：1日300回まで（裏での取得は240回まで。表示に必要な通信のために60回は残す）
-   ・初回の取り込み（まだデータの無い銘柄の10年分）：別枠で1日1,000回まで
-     999銘柄を登録しても、その日のうちに全銘柄のチャートがそろうようにするため。
-     1分あたりの回数の制限（12回・裏では8回）は同じなので、通信の速さ（相手への負担）は変わらない。 */
+   ・10年分の取り込み（初回・分割併合の反映・定期の取り直し）：別枠で1日150回まで
+     新規登録は1日100銘柄までなので、ふつうは足りる。足りない日は翌日に回す
+     （定期の取り直しは直近分の継ぎ足しで代用し、データの無い銘柄は自動切替で飛ばす）。
+   通信の速さは、1分に12回・裏では4回・同時2本まで。一度にたくさん通信しないことで、
+   中継サーバー・Yahoo から回数制限（ban）を受けないようにする。 */
 export const DAILY_CAP = 300;
 const WARM_CAP = 240;
-export const INIT_CAP = 1000;
+export const INIT_CAP = 150;
 const BUDGET_KEY = 'tm.budget.v1';
 let budget = { d: '', n: 0, i: 0 };
 try { budget = JSON.parse(localStorage.getItem(BUDGET_KEY)) || budget; } catch { /* ignore */ }
@@ -130,6 +132,8 @@ function useBudget(prio, initial = false) {
   try { localStorage.setItem(BUDGET_KEY, JSON.stringify(b)); } catch { /* ignore */ }
   return true;
 }
+// 今日の10年分の取り込み枠が残っているか
+export const initAvailable = () => budgetToday().i < INIT_CAP;
 export function budgetStatus() {
   const b = budgetToday();
   return { used: b.n, cap: DAILY_CAP, over: b.n >= DAILY_CAP, init: b.i, initCap: INIT_CAP, initOver: b.i >= INIT_CAP };
@@ -230,11 +234,11 @@ function fetchYahoo(path, ctx = {}, check = (j) => j && j.chart) {
 export const PRIO = { show: 0, prefetch: 1, warm: 2 };
 // 通信量の上限（中継先・Yahoo から制限されないための安全装置）
 //  - 同時通信は2本まで、開始間隔は1.5秒以上
-//  - 1分間に開始する通信は12回まで（表示中の銘柄は優先。裏の先回り取得は8回まで）
+//  - 1分間に開始する通信は12回まで（表示中の銘柄は優先。裏の先回り取得は4回まで）
 const MAX_ACTIVE = 2;
 const MIN_GAP_MS = 1500;
 const PER_MIN = 12;
-const PER_MIN_WARM = 8;
+const PER_MIN_WARM = 4;
 let active = 0, lastStart = 0;
 const starts = [];
 const queue = [];
@@ -562,6 +566,8 @@ function refreshBase(code, prio) {
     const base = await getStored(code, 'base');
     const lastT = base?.bars?.length ? base.bars[base.bars.length - 1][0] * 1000 : 0;
     let full = !base || !base.bars?.length || fullDue(code, base, now) || now - lastT > 25 * 86400e3;
+    // 定期の取り直しだけが理由なら、今日の取り込み枠が無いときは継ぎ足しで済ませる（取り直しは翌日以降）
+    if (full && base?.bars?.length && base.fullAt && now - lastT <= 25 * 86400e3 && !initAvailable()) full = false;
     // 継ぎ足しは通常「直近5日分」だけ（約1KB）。4日以上空いたときは1か月分
     const range = full ? '10y' : now - lastT < 4 * 86400e3 ? '5d' : '1mo';
     const why = !base?.bars?.length ? '日足10年分（初回）' : base.fullAt === 0 ? '日足10年分（分割・併合の反映）' : '日足10年分（定期の取り直し）';

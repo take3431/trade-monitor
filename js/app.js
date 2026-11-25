@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261125145412';
-import * as D from './data.js?v=20261125145412';
-import { Stage, themeColors } from './chart.js?v=20261125145412';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125145412';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125145412';
+import * as M from './market.js?v=20261125150209';
+import * as D from './data.js?v=20261125150209';
+import { Stage, themeColors } from './chart.js?v=20261125150209';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125150209';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125150209';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -164,7 +164,7 @@ function showEmpty(empty) {
 }
 
 // 銘柄を表示。キャッシュがあれば非表示レイヤーに描画→即切替、その後必要なら最新データ取得。
-async function show(code, { nav = false, force = false, retry = false } = {}) {
+async function show(code, { nav = false, force = false, retry = false, auto = false } = {}) {
   const item = list.find((x) => x.code === code);
   if (!item) { showEmpty(true); return; }
   showEmpty(false);
@@ -179,6 +179,9 @@ async function show(code, { nav = false, force = false, retry = false } = {}) {
   const cached = await D.cachedSet(code, tfs);
   if (seq !== st.seq) return;
   const hasCache = tfs.some((tf) => cached[tf]);
+  // 自動切替で、まだデータが無く今日の取り込み枠も使い切った銘柄は飛ばす（「データ未取得」の画面を出さない）
+  if (auto && !hasCache && !D.initAvailable() && (st.skips = (st.skips || 0) + 1) < Math.min(enabledCount(), 50)) { go(1, false, true); return; }
+  st.skips = 0;
   if (!isSame) await present(item, cached, seq, !hasCache); // 未取得なら銘柄名と「読込中」を先に表示
 
   if (nav) { await new Promise((r) => setTimeout(r, NAV_FETCH_DELAY)); if (seq !== st.seq) return; }
@@ -227,11 +230,11 @@ async function present(item, entries, seq, loading = false) {
   updateStatus();
 }
 
-function go(delta, nav = true) {
+function go(delta, nav = true, auto = false) {
   const code = neighbor(delta);
   st.remaining = settings.interval;
   if (!code) { showEmpty(true); renderCountdown(); return; }
-  show(code, { nav });
+  show(code, { nav, auto });
   renderCountdown();
 }
 
@@ -263,7 +266,7 @@ function tick() {
     st.remaining--;
     const lead = Math.min(PREFETCH_SEC, settings.interval - 2);
     if (st.remaining === lead) prefetch(neighbor(1));
-    if (st.remaining <= 0) go(1, false);
+    if (st.remaining <= 0) go(1, false, true);
   }
   renderCountdown(now);
 }
@@ -271,12 +274,13 @@ function tick() {
 /* ---------------- 裏での先回り取得 ----------------
    表示を待たずに、まだデータの無い銘柄だけを8秒に1件ずつ取得しておく。
    すでにデータのある銘柄の最新化は、表示の30秒前の事前取得（まとめて取得）に任せる。 */
-const WARM_EVERY_MS = 8000;
+const WARM_EVERY_MS = 15000; // 裏での取り込みは15秒に1件（一度にたくさん通信しない）
 const WARM_MAX_AGE = 10 * 60e3;
 let warmAt = 0, warmBusy = false;
 const haveData = new Set(); // データ取得済みと確認できた銘柄（毎回の確認を省くため）
 async function warmTick(now) {
   if (warmBusy || st.settingsOpen || document.hidden || now - warmAt < WARM_EVERY_MS || !D.isIdle()) return;
+  if (!D.initAvailable()) return; // 今日の取り込み枠を使い切ったら、裏での取り込みは翌日に
   warmAt = now;
   const tfs = neededTfs();
   const ok = (code) => { const f = D.failureOf(code); return !f || now > f.until; };
@@ -870,7 +874,16 @@ function ask(msg, { input = null, ok = 'OK', danger = false, alert: only = false
   body.addEventListener('pointercancel', end);
 })();
 
-/* ---------------- 新規登録ダイアログ ---------------- */
+/* ---------------- 新規登録ダイアログ ----------------
+   新規登録は1日100銘柄まで（日本時間0時区切り）。登録した銘柄は10年分のデータを1回取り込むので、
+   一度に大量に登録して通信が集中しないようにする。 */
+const ADD_PER_DAY = 100;
+const ADD_KEY = 'tm.addcount.v1';
+function addsToday() {
+  const d = M.dayKey(Date.now());
+  const a = load(ADD_KEY, null);
+  return a && a.d === d ? a : { d, n: 0 };
+}
 const dlg = $('addDialog');
 const normCode = (v) => {
   const raw = String(v || '').trim().normalize('NFKC').toUpperCase();
@@ -885,7 +898,9 @@ function setMarketLabel(code) {
 $('btnAdd').addEventListener('click', () => {
   $('addQuery').value = ''; $('addCode').value = ''; $('addName').value = '';
   setMarketLabel('');
-  $('addResults').innerHTML = ''; $('addMsg').textContent = '';
+  $('addResults').innerHTML = '';
+  const left = ADD_PER_DAY - addsToday().n;
+  $('addMsg').textContent = left < 20 ? `今日あと${Math.max(0, left)}銘柄登録できます（1日${ADD_PER_DAY}銘柄まで）` : '';
   loadDict();
   dlg.showModal();
   setTimeout(() => $('addQuery').focus(), 50);
@@ -954,6 +969,10 @@ $('addForm').addEventListener('submit', (e) => {
   if (!validCode(code)) { msg.textContent = '日本株は4桁のコード（例: 7203, 130A）、米国株はティッカー（例: AAPL）を入力してください'; return; }
   if (list.some((x) => x.code === code)) { msg.textContent = 'すでに登録されています'; return; }
   if (list.length >= MAX_SYMBOLS) { msg.textContent = `登録できるのは最大${MAX_SYMBOLS}銘柄です`; return; }
+  const added = addsToday();
+  if (added.n >= ADD_PER_DAY) { msg.textContent = `新規登録は1日${ADD_PER_DAY}銘柄までです（通信の負担を抑えるため）。明日また登録できます`; return; }
+  added.n++;
+  save(ADD_KEY, added);
   list.push({ code, name: $('addName').value.trim() || lookupName(code) || '', enabled: true });
   saveList();
   renderList();
