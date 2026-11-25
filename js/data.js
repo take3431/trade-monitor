@@ -9,8 +9,8 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261125172431';
-import { yahooSymbol, marketOfCode } from './names.js?v=20261125172431';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261125175119';
+import { yahooSymbol, marketOfCode } from './names.js?v=20261125175119';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = yahooSymbol;
@@ -82,6 +82,31 @@ function customRoute() {
 }
 
 const cooldown = new Map(); // id -> 再利用可能になる時刻
+/* 中継ごとの調子（続けて失敗した回数・休ませる時刻・評価）を覚えておく。
+   止まっている中継（応答なし・500番台など）を何度も試さないよう、続けて失敗するほど長く休ませる
+   （20秒 → 2分 → 10分 → 1時間）。一度成功すれば元に戻す。読み込み直しても覚えておく。 */
+const ROUTES_KEY = 'tm.routes.v1';
+const routeFails = new Map(); // id -> 続けて失敗した回数
+const ROUTE_REST = [20e3, 2 * 60e3, 10 * 60e3, 60 * 60e3];
+function saveRoutes() {
+  const o = {};
+  for (const r of [...ROUTES, customRoute()].filter(Boolean)) o[r.id] = { n: routeFails.get(r.id) || 0, until: cooldown.get(r.id) || 0, score: r.score };
+  try { localStorage.setItem(ROUTES_KEY, JSON.stringify(o)); } catch { /* ignore */ }
+}
+function loadRoutes() {
+  try {
+    const o = JSON.parse(localStorage.getItem(ROUTES_KEY)) || {};
+    const now = Date.now();
+    for (const r of ROUTES) {
+      const x = o[r.id];
+      if (!x) continue;
+      if (x.n) routeFails.set(r.id, x.n);
+      if (x.until > now) cooldown.set(r.id, x.until);
+      if (Number.isFinite(x.score)) r.score = Math.min(1, Math.max(0.05, x.score));
+    }
+  } catch { /* ignore */ }
+}
+loadRoutes();
 
 function routeOrder() {
   const c = customRoute();
@@ -94,7 +119,13 @@ function routeOrder() {
   return list.sort((a, b) => (cooldown.get(a.id) || 0) - (cooldown.get(b.id) || 0)).slice(0, 1);
 }
 
-function routeOk(r) { r.score = r.score * 0.7 + 0.3; cooldown.delete(r.id); }
+function routeOk(r) {
+  const was = routeFails.get(r.id) || cooldown.has(r.id);
+  r.score = r.score * 0.7 + 0.3;
+  cooldown.delete(r.id);
+  routeFails.delete(r.id);
+  if (was) saveRoutes();
+}
 
 /* ---- 相手が嫌がり始めたら、すぐに引く ----
    ・回数制限（429）を受けたら全体を止める。30分以内に続けて受けるほど長く（15秒→1分→5分→30分）。
@@ -146,8 +177,14 @@ function routeFail(r, status, retryAfterMs = 0, countHit = true) {
     pauseAll(wait);
     if (wait >= 60e3) record({ t: now, code: '—', what: `回数制限を受けたため、通信を${Math.round(wait / 60e3)}分止めます`, route: r.label, ok: true, ms: 0, note: '' });
   } else {
-    cooldown.set(r.id, now + (status === 401 || status === 403 ? 30 * 60e3 : 20e3));
+    // 続けて失敗するほど長く休ませる（拒否 401/403 は最初から30分以上）
+    const n = (routeFails.get(r.id) || 0) + 1;
+    routeFails.set(r.id, n);
+    const rest = ROUTE_REST[Math.min(n - 1, ROUTE_REST.length - 1)];
+    cooldown.set(r.id, now + Math.max(rest, status === 401 || status === 403 ? 30 * 60e3 : 0));
+    if (n === 3) record({ t: now, code: '—', what: `中継「${r.label}」の失敗が続いているため、しばらく使いません`, route: r.label, ok: true, ms: 0, note: '' });
   }
+  saveRoutes();
 }
 // Retry-After（秒数または日時）をミリ秒に
 function retryAfterOf(res) {
@@ -366,9 +403,9 @@ function fetchYahoo(path, ctx = {}, check = (j) => j && j.chart) {
             netFails.push(r); // 接続不可：端末側の通信切れかもしれないので、数えるのは最後に判断
             if (typeof navigator !== 'undefined' && navigator.onLine === false) idx = order.length; // 明らかに切れていれば残りは試さない
           } else {
-            routeFail(r, status, retryAfter, !hit429);
+            // 404 は銘柄コード違いなので、中継の調子・相手の混雑とは数えない
+            if (status !== 404) { routeFail(r, status, retryAfter, !hit429); noteFailure(); }
             if (status === 429) { hit429 = true; n429++; }
-            if (status !== 404) noteFailure(); // 404 は銘柄コード違いなので、相手の混雑とは数えない
           }
           errs.push(`${r.label}: ${why}`);
         } finally {
@@ -1003,7 +1040,8 @@ async function refreshViaBatch(code, prio) {
     list.push(c);
   }
   const p = runBatch(list, prio);
-  for (const c of list) batchWaiters.set(c, p.then((left) => left.has(c)));
+  // 一緒に更新を待っている銘柄用。まとめて取得が失敗しても「誰も受け取らない失敗」にならないよう、受け取り口を付けておく
+  for (const c of list) { const w = p.then((left) => left.has(c)); w.catch(() => {}); batchWaiters.set(c, w); }
   try { await p; } finally { for (const c of list) batchWaiters.delete(c); }
   return (await p).has(code);
 }
@@ -1025,8 +1063,33 @@ function setNoData(code, on) {
 export const clearNoData = (code) => { if (noDataMap()[code]) setNoData(code, false); };
 
 // 失敗が続く銘柄（上場廃止・コード違いなど）は、間隔を空けてから再挑戦する
-const failures = new Map(); // code -> { n, until }
+const FAIL_KEY = 'tm.fail.v1';
+const FAIL_GIVEUP = 5; // その日に続けてこの回数失敗したら、その日は取りに行かない
+const failures = new Map(); // code -> { n, at, until, d, msg, error }
+// 読み込み直し（12時間ごと・版の更新）でも、待ち時間と回数を引き継ぐ。前日以前の記録は捨てる
+(function loadFailures() {
+  try {
+    const today = dayKey(Date.now());
+    for (const [code, f] of Object.entries(JSON.parse(localStorage.getItem(FAIL_KEY)) || {})) {
+      if (f.d === today) failures.set(code, { ...f, error: new Error(f.msg || '取得失敗') });
+    }
+  } catch { /* ignore */ }
+})();
+let failSaveTimer = null;
+function saveFailures() {
+  clearTimeout(failSaveTimer);
+  failSaveTimer = setTimeout(() => {
+    const today = dayKey(Date.now());
+    const o = {};
+    for (const [code, f] of failures) if (f.d === today) o[code] = { n: f.n, at: f.at, until: f.until, d: f.d, msg: String(f.error?.message || '').slice(0, 200) };
+    try { localStorage.setItem(FAIL_KEY, JSON.stringify(o)); } catch { /* ignore */ }
+  }, 1000);
+}
 export function failureOf(code) { return failures.get(code) || null; }
+// 今日はもう取りに行かない銘柄（その日に続けて5回失敗）
+export function gaveUpToday(code) { const f = failures.get(code); return !!f && f.d === dayKey(Date.now()) && f.n >= FAIL_GIVEUP; }
+export function gaveUpSet() { const today = dayKey(Date.now()); return new Set([...failures].filter(([, f]) => f.d === today && f.n >= FAIL_GIVEUP).map(([c]) => c)); }
+export function clearFailure(code) { if (failures.delete(code)) saveFailures(); }
 
 export async function loadSet(code, tfs, { force = false, onEntry = null, prio = PRIO.show, maxAgeMs = null } = {}) {
   const entries = await cachedSet(code, tfs);
@@ -1034,6 +1097,7 @@ export async function loadSet(code, tfs, { force = false, onEntry = null, prio =
   const kinds = [...new Set(tfs.map(kindOf))];
   const market = mkt(code);
   if (!force && noDataToday(code)) return { entries, fetched, error: quietError('Yahoo にこの銘柄のデータがありません', 'noData'), skipped: true };
+  if (!force && gaveUpToday(code)) return { entries, fetched, error: quietError('失敗が続いたため、今日はこの銘柄を取りに行きません', 'gaveUp'), skipped: true };
   const f = failures.get(code);
   // 表示中の銘柄は最短1分、裏の取得は 2,4,8…最大30分 空ける
   if (f && !force && Date.now() < (prio === PRIO.show ? Math.min(f.until, f.at + 60e3) : f.until)) {
@@ -1069,9 +1133,14 @@ export async function loadSet(code, tfs, { force = false, onEntry = null, prio =
   if (error?.noData) setNoData(code, true);
   if (error && !error.budget && !error.quiet) {
     const n = (failures.get(code)?.n || 0) + 1;
-    failures.set(code, { n, at: Date.now(), until: Date.now() + Math.min(30, 2 ** n) * 60e3, error });
+    const today = dayKey(Date.now());
+    const prev = failures.get(code);
+    const m = prev && prev.d === today ? n : 1; // 日をまたいだら数え直す
+    failures.set(code, { n: m, at: Date.now(), until: Date.now() + Math.min(30, 2 ** m) * 60e3, d: today, error });
+    saveFailures();
+    if (m === FAIL_GIVEUP) record({ t: Date.now(), code, what: `失敗が${FAIL_GIVEUP}回続いたため、今日はこの銘柄を取りに行きません`, route: '—', ok: true, ms: 0, note: '' });
   } else if (fetched) {
-    failures.delete(code);
+    if (failures.delete(code)) saveFailures();
     clearNoData(code);
   }
   return { entries, fetched, changed, error };

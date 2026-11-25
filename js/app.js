@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261125172431';
-import * as D from './data.js?v=20261125172431';
-import { Stage, themeColors } from './chart.js?v=20261125172431';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125172431';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125172431';
+import * as M from './market.js?v=20261125175119';
+import * as D from './data.js?v=20261125175119';
+import { Stage, themeColors } from './chart.js?v=20261125175119';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125175119';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125175119';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -373,7 +373,7 @@ async function warmTick(now) {
   if (D.cooling() || !D.isLeader()) return; // 通信を控えている間・別のタブが通信役のときは取りに行かない
   warmAt = now;
   const tfs = neededTfs();
-  const ok = (code) => { const f = D.failureOf(code); return (!f || now > f.until) && !D.noDataToday(code); };
+  const ok = (code) => { const f = D.failureOf(code); return (!f || now > f.until) && !D.noDataToday(code) && !D.gaveUpToday(code); };
   const en = list.filter((x) => x.enabled && ok(x.code));
   if (!en.length) return;
   warmBusy = true;
@@ -577,10 +577,11 @@ function updateDirty() {
 function renderList() {
   $('listCount').textContent = `(${list.length}/${MAX_SYMBOLS})`;
   const noData = D.noDataSet();
+  const gaveUp = D.gaveUpSet();
   $('listBody').innerHTML = list.map((x, i) => `
     <tr data-code="${esc(x.code)}">
       <td class="c-no"><span class="grip" title="ドラッグで並び替え"><svg class="ico"><use href="#i-grip"/></svg></span><span class="no">${String(i + 1).padStart(3, '0')}</span></td>
-      <td class="c-code num">${esc(x.code)}${isIndex(x.code) ? '<span class="tag idx">指数</span>' : isUS(x.code) ? '<span class="tag">米</span>' : ''}${noData.has(x.code) ? '<span class="tag nd" title="Yahoo にこの銘柄のデータがありません（上場廃止・コード違いの可能性）。今日は取りに行きません">データなし</span>' : ''}</td>
+      <td class="c-code num">${esc(x.code)}${isIndex(x.code) ? '<span class="tag idx">指数</span>' : isUS(x.code) ? '<span class="tag">米</span>' : ''}${noData.has(x.code) ? '<span class="tag nd" title="Yahoo にこの銘柄のデータがありません（上場廃止・コード違いの可能性）。今日は取りに行きません">データなし</span>' : gaveUp.has(x.code) ? '<span class="tag nd" title="取得の失敗が5回続いたため、今日はこの銘柄を取りに行きません（明日また試します）">取得失敗</span>' : ''}</td>
       <td class="c-name"><button class="link rename">${esc(x.name || '（名称未設定）')}</button></td>
       <td class="c-price r"></td>
       <td class="c-target"><div class="tgt-box"><input class="tgt" type="text" autocomplete="off" enterkeyhint="done" placeholder="株価を入力" aria-label="${esc(x.code)} の設定株価"><span class="tgt-dir"></span></div></td>
@@ -1080,6 +1081,7 @@ $('addForm').addEventListener('submit', (e) => {
   added.n++;
   save(ADD_KEY, added);
   D.clearNoData(code);
+  D.clearFailure(code);
   list.push({ code, name: $('addName').value.trim() || lookupName(code) || '', enabled: true });
   saveList();
   renderList();
