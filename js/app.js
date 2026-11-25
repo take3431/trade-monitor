@@ -1,7 +1,7 @@
 import * as M from './market.js';
 import * as D from './data.js';
 import { Stage, themeColors } from './chart.js';
-import { lookupName, searchLocal, loadDict, isUS, JP_RE, US_RE } from './names.js';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -12,7 +12,7 @@ const DEFAULTS = {
   interval: 30, offHours: 'continue',
   leftTf: '1d', rightTf: '1mo', leftBars: 126, rightBars: 120,
   ind: { ma: true, bb: false, vol: true },
-  theme: 'dark', colorMode: 'jp', font: 'm',
+  theme: 'dark', colorMode: 'jp', font: 'm', wakeLock: true,
 };
 // 画面に出さない固定値
 const CACHE_MIN = 2;      // 場中のキャッシュ有効時間（分）
@@ -34,7 +34,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const storedSettings = load(KEY.settings, {});
 const settings = { ...DEFAULTS, ...storedSettings, ind: { ...DEFAULTS.ind, ...(storedSettings.ind || {}) } };
 // 旧版の設定項目は使わない
-for (const k of ['proxy', 'fallback', 'demo', 'cacheMin', 'prefetchSec', 'wakeLock']) delete settings[k];
+for (const k of ['proxy', 'fallback', 'demo', 'cacheMin', 'prefetchSec']) delete settings[k];
 let list = load(KEY.list, null) || DEFAULT_LIST;
 const saved = load(KEY.state, {});
 const st = {
@@ -270,7 +270,7 @@ function toast(msg) {
 /* ---------------- 画面スリープ防止 ---------------- */
 let wake = null;
 async function keepAwake() {
-  if (!('wakeLock' in navigator) || document.hidden || wake) return;
+  if (!settings.wakeLock || !('wakeLock' in navigator) || document.hidden || wake) return;
   try {
     wake = await navigator.wakeLock.request('screen');
     wake.addEventListener('release', () => { wake = null; });
@@ -303,7 +303,7 @@ function closeSettings() {
   const cur = list.find((x) => x.code === st.code);
   const code = cur ? cur.code : neighbor(1);
   if (code) { stages[front].code = prev !== next ? null : stages[front].code; show(code); } else showEmpty(true);
-  keepAwake();
+  if (settings.wakeLock) keepAwake(); else if (wake) { wake.release(); wake = null; }
   renderCountdown();
 }
 
@@ -349,6 +349,7 @@ function fillSettings() {
   periodOptions('selLeftBars', s.leftTf, s.leftBars);
   periodOptions('selRightBars', s.rightTf, s.rightBars);
   $('chkMa').checked = s.ind.ma; $('chkBb').checked = s.ind.bb; $('chkVol').checked = s.ind.vol;
+  $('chkWake').checked = s.wakeLock;
   $('chkDark').checked = s.theme === 'dark';
   $('chkDark').onchange = () => { document.documentElement.dataset.theme = $('chkDark').checked ? 'dark' : 'light'; };
   seg('segColor', s.colorMode, (v) => { $('segColor').dataset.v = v; document.documentElement.dataset.color = v; });
@@ -365,6 +366,7 @@ function readSettings() {
   s.leftTf = $('segLeftTf').dataset.v; s.rightTf = $('segRightTf').dataset.v;
   s.leftBars = Number($('selLeftBars').value); s.rightBars = Number($('selRightBars').value);
   s.ind = { ma: $('chkMa').checked, bb: $('chkBb').checked, vol: $('chkVol').checked };
+  s.wakeLock = $('chkWake').checked;
   s.theme = $('chkDark').checked ? 'dark' : 'light';
   s.colorMode = $('segColor').dataset.v; s.font = $('segFont').dataset.v;
 }
@@ -553,38 +555,45 @@ function pickResult(r) {
   $('addMsg').textContent = '';
 }
 
-let searchSeq = 0;
-async function doSearch() {
-  const raw = $('addQuery').value.trim();
-  const msg = $('addMsg');
+// 候補の表示：手元の辞書で即座に出し、英字（米国株など）の場合だけ少し待って Yahoo 検索の結果を追加する
+let searchSeq = 0, remoteTimer = null;
+function showResults(results, note) {
   const ul = $('addResults');
-  const seq = ++searchSeq;
-  ul.innerHTML = '';
-  if (!raw) return;
-  await loadDict();
-  const asCode = normCode(raw);
-  let results = await searchLocal(raw);
-  // 辞書に無いもの（新規上場・米国の個別株など）は Yahoo でも検索
-  if (results.length < 5 || /^[A-Za-z]/.test(raw)) {
-    msg.textContent = '検索中…';
-    try {
-      const remote = await D.searchRemote(raw);
-      for (const x of remote) {
-        if (!results.some((y) => y.code === x.code)) results.push({ ...x, name: lookupName(x.code) || x.name });
-      }
-    } catch { /* 辞書の結果だけ使う */ }
-  }
-  if (seq !== searchSeq) return;
-  results = results.slice(0, 30);
-  if (!results.length && validCode(asCode)) results = [{ code: asCode, name: lookupName(asCode), market: isUS(asCode) ? '米国' : '東証' }];
-  msg.textContent = results.length ? '候補をタップしてください' : '見つかりませんでした。銘柄コード（例: 7203）またはティッカー（例: AAPL）で入力してください。';
+  $('addMsg').textContent = note;
   ul.innerHTML = results.map((x, i) => `<li><button type="button" data-i="${i}"><span class="num code">${esc(x.code)}</span><span class="nm">${esc(x.name || '（名称不明）')}</span><small class="muted">${esc(x.market || '')}</small></button></li>`).join('');
   ul.querySelectorAll('button').forEach((b) => { b.onclick = () => pickResult(results[Number(b.dataset.i)]); });
 }
+function doSearch() {
+  const raw = $('addQuery').value;
+  const q = cleanQuery(raw);
+  const seq = ++searchSeq;
+  clearTimeout(remoteTimer);
+  if (!q) { showResults([], ''); return; }
+  if (!dictReady()) { $('addMsg').textContent = '銘柄辞書を読み込み中…'; loadDict().then(() => { if (seq === searchSeq) doSearch(); }); return; }
+  let results = searchLocal(q);
+  const asCode = normCode(q);
+  if (!results.some((x) => x.code === asCode) && validCode(asCode)) results.unshift({ code: asCode, name: lookupName(asCode), market: isUS(asCode) ? '米国' : '東証' });
+  const ascii = /^[\x20-\x7E]+$/.test(q);
+  showResults(results, results.length ? '候補をタップしてください' : (ascii ? '検索中…' : '見つかりませんでした'));
+  // Yahoo 検索は通信が必要なので、英字の入力が止まってから1回だけ
+  if (ascii && q.length >= 2 && results.length < 8) {
+    remoteTimer = setTimeout(async () => {
+      try {
+        const remote = await D.searchRemote(q);
+        if (seq !== searchSeq) return;
+        for (const x of remote) if (!results.some((y) => y.code === x.code)) results.push({ ...x, name: lookupName(x.code) || x.name });
+        showResults(results.slice(0, 30), results.length ? '候補をタップしてください' : '見つかりませんでした。銘柄コード（例: 7203）またはティッカー（例: AAPL）で入力してください。');
+      } catch {
+        if (seq === searchSeq && !results.length) $('addMsg').textContent = '見つかりませんでした';
+      }
+    }, 700);
+  }
+}
 $('btnSearch').addEventListener('click', doSearch);
-let searchTimer = null;
-$('addQuery').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(doSearch, 350); });
-$('addQuery').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(searchTimer); doSearch(); } });
+// 1文字入力するごとに即検索（日本語入力の変換中も反映）
+$('addQuery').addEventListener('input', doSearch);
+$('addQuery').addEventListener('compositionupdate', () => setTimeout(doSearch, 0));
+$('addQuery').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
 
 $('addForm').addEventListener('submit', (e) => {
   e.preventDefault();

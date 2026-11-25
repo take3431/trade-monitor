@@ -42,50 +42,64 @@ export const US_NAMES = {
 const MARKET_LABEL = { P: 'プライム', S: 'スタンダード', G: 'グロース', E: 'ETF・ETN', R: 'REIT等', PRO: 'PRO', O: '出資証券' };
 
 let jp = null;
+let index = null; // 検索用に正規化済みの一覧（読み込み時に1回だけ作る）
 let jpLoading = null;
+
+// 全角・半角、ひらがな・カタカナ、長音・記号の違いを吸収して比較する
+const toKata = (s) => s.replace(/[ぁ-ゖ]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60));
+const norm = (s) => toKata(String(s).normalize('NFKC').toUpperCase()).replace(/[\s・･.\-()（）&＆'’ー]/g, '');
+
+function buildIndex() {
+  const rows = [];
+  for (const [code, [name, m, rd]] of Object.entries(jp || {})) {
+    const market = MARKET_LABEL[m] || '東証';
+    rows.push({ code, name, market, k: norm(name), r: (rd || '').split('|').map(norm), minor: /ETF|PRO|REIT|出資/.test(market) });
+  }
+  for (const [code, name] of Object.entries(US_NAMES)) {
+    rows.push({ code, name, market: '米国', k: norm(name), r: [norm(code)], minor: false });
+  }
+  index = rows;
+}
+
 export function loadDict() {
   if (jp) return Promise.resolve(jp);
   if (!jpLoading) {
-    jpLoading = fetch('data/jp-stocks.json', { cache: 'force-cache' })
+    jpLoading = fetch('data/jp-stocks.json')
       .then((r) => r.json())
-      .then((j) => { jp = j.list; return jp; })
+      .then((j) => { jp = j.list; buildIndex(); return jp; })
       .catch(() => { jpLoading = null; return {}; });
   }
   return jpLoading;
 }
+export const dictReady = () => !!index;
 
 export function lookupName(code) {
   if (isUS(code)) return US_NAMES[code] || '';
   return jp?.[code]?.[0] || '';
 }
 
-// 全角・半角、ひらがな・カタカナの違いを吸収して比較する
-const toKata = (s) => s.replace(/[ぁ-ゖ]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60));
-const norm = (s) => toKata(String(s).normalize('NFKC').toUpperCase()).replace(/[\s・･.\-()（）]/g, '');
+// 入力途中のローマ字（例: 「とy」の y）は無視して検索する
+export function cleanQuery(q) {
+  const t = String(q).trim();
+  return /[^\x00-\x7F]/.test(t) ? t.replace(/[a-zA-Z]+$/, '') : t;
+}
 
-export async function searchLocal(q) {
-  await loadDict();
-  const n = norm(q);
+// 同期で即座に返す（辞書が未読込なら空）
+export function searchLocal(q, limit = 30) {
+  if (!index) return [];
+  const n = norm(cleanQuery(q));
   if (!n) return [];
   const hits = [];
-  const push = (code, name, market, score) => hits.push({ code, name, market, score });
-  for (const [code, [name, m]] of Object.entries(jp || {})) {
-    const k = norm(name);
-    if (code === n || k === n) push(code, name, MARKET_LABEL[m] || '東証', 0);
-    else if (code.startsWith(n)) push(code, name, MARKET_LABEL[m] || '東証', 1);
-    else {
-      if (k.startsWith(n)) push(code, name, MARKET_LABEL[m] || '東証', 2);
-      else if (k.includes(n)) push(code, name, MARKET_LABEL[m] || '東証', 3);
-    }
+  for (const x of index) {
+    let score;
+    if (x.code === n || x.k === n || x.r.includes(n)) score = 0;
+    else if (x.code.startsWith(n)) score = 1;
+    else if (x.k.startsWith(n) || x.r.some((r) => r.startsWith(n))) score = 2;
+    else if (x.k.includes(n) || x.r.some((r) => r.includes(n))) score = 3;
+    else continue;
+    hits.push({ code: x.code, name: x.name, market: x.market, score: score * 10 + (x.minor ? 5 : 0) });
   }
-  for (const [code, name] of Object.entries(US_NAMES)) {
-    const k = norm(name);
-    if (norm(code) === n || k === n) push(code, name, '米国', 0);
-    else if (norm(code).startsWith(n)) push(code, name, '米国', 1);
-    else if (k.startsWith(n)) push(code, name, '米国', 2);
-    else if (k.includes(n)) push(code, name, '米国', 3);
-  }
-  // ETF・PRO などより一般の株式を上に
-  const rank = (h) => h.score * 10 + (/ETF|PRO|REIT|出資/.test(h.market) ? 5 : 0);
-  return hits.sort((a, b) => rank(a) - rank(b) || a.code.localeCompare(b.code)).slice(0, 30);
+  // 同じ一致度なら社名の短いもの（＝代表的な会社であることが多い）を上に
+  hits.sort((a, b) => a.score - b.score || a.name.length - b.name.length || a.code.localeCompare(b.code));
+  return hits.slice(0, limit);
 }

@@ -2,11 +2,30 @@
 """JPX（日本取引所グループ）公表の「東証上場銘柄一覧」から data/jp-stocks.json を作り直す。
 
 使い方（月1回程度。JPX は毎月初めに前月末時点の一覧を公開します）:
-    pip install openpyxl
+    pip install openpyxl pykakasi
     python3 tools/update-jp-stocks.py
+
+読みがな（ひらがな検索用）は pykakasi で自動生成します。読みが複数ある語（日本＝ニホン/ニッポン 等）は両方入れます。
 """
 import io, json, pathlib, unicodedata, urllib.request
 import openpyxl
+import pykakasi
+
+_kks = pykakasi.kakasi()
+# 読みが分かれやすい語は別の読みも入れておく
+# (漢字, 読み, 別の読み)
+ALT = [("日本", "ニッポン", "ニホン"), ("日本", "ニホン", "ニッポン"), ("大和", "ヤマト", "ダイワ"), ("大和", "ダイワ", "ヤマト")]
+
+
+def reading(name):
+    r = "".join(x["kana"] for x in _kks.convert(name))
+    r = unicodedata.normalize("NFKC", r).upper()
+    variants = {r}
+    for kanji, a, b in ALT:
+        if kanji in name and a in r:
+            variants.add(r.replace(a, b))
+    return "|".join(sorted(variants))
+
 
 URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xlsx"
 MARKET = {
@@ -22,7 +41,8 @@ rows = list(openpyxl.load_workbook(io.BytesIO(data), read_only=True).active.iter
 out = {}
 for r in rows:
     code = str(r[1]).strip().upper()
-    out[code] = [unicodedata.normalize("NFKC", str(r[2])).strip(), MARKET.get(r[3], "")]
+    name = unicodedata.normalize("NFKC", str(r[2])).strip()
+    out[code] = [name, MARKET.get(r[3], ""), reading(name)]
 dest = pathlib.Path(__file__).resolve().parent.parent / "data" / "jp-stocks.json"
 dest.write_text(json.dumps({"asof": str(rows[0][0]), "list": out}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 print(f"{len(out)} 銘柄（{rows[0][0]} 時点）を {dest} に書き出しました")
