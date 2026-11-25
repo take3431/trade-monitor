@@ -1,7 +1,7 @@
-import * as M from './market.js?v=20261125104050';
-import * as D from './data.js?v=20261125104050';
-import { Stage, themeColors } from './chart.js?v=20261125104050';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125104050';
+import * as M from './market.js?v=20261125104445';
+import * as D from './data.js?v=20261125104445';
+import { Stage, themeColors } from './chart.js?v=20261125104445';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125104445';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -457,10 +457,12 @@ function readSettings() { Object.assign(settings, formValues()); }
 
 // 何か変更したときだけ「設定を保存して戻る」ボタンを出す
 let snapForm = '', snapList = '';
-function takeSnapshot() { snapForm = JSON.stringify(formValues()); snapList = JSON.stringify(list); updateDirty(); }
+// 並び替えはその場で保存しているので、比較するときは並び順を無視する
+const listKey = () => JSON.stringify([...list].sort((a, b) => a.code.localeCompare(b.code)));
+function takeSnapshot() { snapForm = JSON.stringify(formValues()); snapList = listKey(); updateDirty(); }
 function updateDirty() {
   if (!st.settingsOpen) return;
-  const dirty = JSON.stringify(formValues()) !== snapForm || JSON.stringify(list) !== snapList;
+  const dirty = JSON.stringify(formValues()) !== snapForm || listKey() !== snapList;
   $('btnSave').hidden = !dirty;
 }
 ['input', 'change', 'click'].forEach((ev) => $('settings').addEventListener(ev, () => setTimeout(updateDirty, 0)));
@@ -939,7 +941,11 @@ async function checkUpdate() {
     const r = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
     if (!r.ok) return;
     const { version } = await r.json();
-    if (version && APP_VERSION !== '0' && version !== APP_VERSION) location.reload();
+    if (!version || APP_VERSION === '0' || version === APP_VERSION) return;
+    const tried = load('tm.reloadFor.v1', {});
+    if (tried.v === version && Date.now() - tried.at < 30 * 60e3) return; // 30分以内に同じ版で読み込み直し済み
+    save('tm.reloadFor.v1', { v: version, at: Date.now() });
+    location.reload();
   } catch { /* オフライン等は無視 */ }
 }
 setInterval(checkUpdate, 15 * 60e3);
