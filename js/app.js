@@ -45,7 +45,7 @@ const stages = [new Stage($('stageA')), new Stage($('stageB'))];
 let front = 0;
 
 const persistState = () => save(KEY.state, { code: st.code, paused: st.paused });
-const saveList = () => save(KEY.list, list);
+const saveList = () => { save(KEY.list, list); if (st.settingsOpen) setTimeout(updateDirty, 0); };
 const neededTfs = () => [...new Set([settings.leftTf, settings.rightTf])];
 
 /* ---------------- 設定の反映 ---------------- */
@@ -284,6 +284,7 @@ function openSettings() {
   $('settings').hidden = false;
   fillSettings();
   renderList();
+  takeSnapshot();
   renderCountdown();
 }
 
@@ -358,8 +359,9 @@ function fillSettings() {
   $('segFont').dataset.v = s.font;
 }
 
-function readSettings() {
-  const s = settings;
+// 設定画面の入力内容（保存前）
+function formValues() {
+  const s = {};
   const clamp = (v, lo, hi, d) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
   s.interval = clamp($('inpInterval').value, 10, 300, 30);
   s.offHours = $('selOffHours').value;
@@ -369,7 +371,19 @@ function readSettings() {
   s.wakeLock = $('chkWake').checked;
   s.theme = $('chkDark').checked ? 'dark' : 'light';
   s.colorMode = $('segColor').dataset.v; s.font = $('segFont').dataset.v;
+  return s;
 }
+function readSettings() { Object.assign(settings, formValues()); }
+
+// 何か変更したときだけ「設定を保存して戻る」ボタンを出す
+let snapForm = '', snapList = '';
+function takeSnapshot() { snapForm = JSON.stringify(formValues()); snapList = JSON.stringify(list); updateDirty(); }
+function updateDirty() {
+  if (!st.settingsOpen) return;
+  const dirty = JSON.stringify(formValues()) !== snapForm || JSON.stringify(list) !== snapList;
+  $('btnSave').hidden = !dirty;
+}
+['input', 'change', 'click'].forEach((ev) => $('settings').addEventListener(ev, () => setTimeout(updateDirty, 0)));
 
 /* ---------------- 銘柄一覧 ---------------- */
 function renderList() {
