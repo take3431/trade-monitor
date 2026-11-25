@@ -325,8 +325,11 @@ body.locked > *:not(#gate):not(svg) { visibility: hidden; }
 .gate-hint { display: inline-flex; line-height: 0; }
 
 /* ===== アラート設定（一覧の切り替え） ===== */
-.settings:not(.alert-mode) :is(.c-price, .c-target, .c-alert, #alertPanel, .alert-hint) { display: none; }
-.settings.alert-mode :is(.c-sw, #mainPanel, .list-hint) { display: none; }
+.settings:not(.alert-mode) :is(.c-price, .c-target, .c-alert, #alertPanel, .alert-hint, .clr) { display: none; }
+.settings.alert-mode :is(.c-sw, #mainPanel, .list-hint, .del) { display: none; }
+.icon-btn.clr { color: var(--muted); }
+.icon-btn.clr:disabled { opacity: .3; }
+.alert-tests { justify-content: flex-start; flex-wrap: wrap; }
 #btnAlertMode[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface2)); box-shadow: 0 0 0 1px var(--accent); }
 .c-price { width: 6.5rem; font-variant-numeric: tabular-nums; }
 .c-target { width: 10rem; }
@@ -339,8 +342,6 @@ th.c-target, th.c-alert { text-align: center; }
 .tgt-dir { width: 1em; text-align: center; font-size: .85rem; }
 .tgt-box.off { opacity: .45; background: transparent; }
 .tgt-box.off .tgt { cursor: not-allowed; }
-.alert-panel .alert-rule { font-size: .85rem; line-height: 1.6; margin: .2rem 0 .5rem; }
-.alert-notes { margin: 0; padding-left: 1.1rem; line-height: 1.6; }
 .alert-actions { display: flex; flex-direction: column; gap: .5rem; }
 
 /* ===== アラート通知（× かスライドで消すまで残る） ===== */
@@ -358,7 +359,8 @@ th.c-target, th.c-alert { text-align: center; }
 }
 .alert-card.dir-up { border-left-color: var(--up); }
 .alert-card.dir-down { border-left-color: var(--down); }
-.alert-card .a-now { display: block; color: var(--muted); font-size: .82rem; }
+.alert-card .a-test { margin-left: .5rem; padding: 0 .35rem; border-radius: 4px; font-size: .7rem; font-weight: 600; background: var(--surface2); color: var(--muted); border: 1px solid var(--border2); vertical-align: middle; }
+.alert-card .a-time { font-variant-numeric: tabular-nums; }
 .alert-card .a-ico { width: 1.6rem; height: 1.6rem; color: var(--warn); margin-top: .1rem; animation: ring 1.2s ease 2; }
 .alert-card .a-body { min-width: 0; }
 .alert-card .a-title { font-weight: 700; font-size: 1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

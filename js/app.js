@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261125124411';
-import * as D from './data.js?v=20261125124411';
-import { Stage, themeColors } from './chart.js?v=20261125124411';
-import { parsePrice, fmtNum, crossed, unlockAudio, playChime, showAlertCard, initAlertCards } from './alerts.js?v=20261125124411';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125124411';
+import * as M from './market.js?v=20261125125450';
+import * as D from './data.js?v=20261125125450';
+import { Stage, themeColors } from './chart.js?v=20261125125450';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125125450';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125125450';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -366,9 +366,11 @@ function openSettings() {
   renderCountdown();
 }
 
-function closeSettings() {
+// apply = true：「設定を保存して戻る」。右側の設定を反映する
+// apply = false：× や「戻る」。右側の変更は捨てる（銘柄の登録・並び替えなどは、その場で保存済みなので反映される）
+function closeSettings(apply = false) {
   const prev = JSON.stringify({ tf: [settings.leftTf, settings.rightTf, settings.leftBars, settings.rightBars], ind: settings.ind, t: settings.theme, c: settings.colorMode, f: settings.font });
-  readSettings();
+  if (apply) readSettings();
   save(KEY.settings, settings);
   saveList();
   applyLook();
@@ -477,7 +479,7 @@ function renderList() {
       <td class="c-target"><div class="tgt-box"><input class="tgt" type="text" autocomplete="off" enterkeyhint="done" placeholder="株価を入力" aria-label="${esc(x.code)} の設定株価"><span class="tgt-dir"></span></div></td>
       <td class="c-alert"><label class="switch"><input type="checkbox" class="alert-tg" aria-label="${esc(x.code)} のアラート"><i></i></label></td>
       <td class="c-sw"><label class="switch"><input type="checkbox" class="toggle" ${x.enabled ? 'checked' : ''}><i></i></label></td>
-      <td class="c-del"><button class="icon-btn danger del" aria-label="削除"><svg class="ico"><use href="#i-trash"/></svg></button></td>
+      <td class="c-del"><button class="icon-btn danger del" aria-label="削除"><svg class="ico"><use href="#i-trash"/></svg></button><button class="icon-btn clr" aria-label="${esc(x.code)} の設定株価を消す" title="設定株価を消す"><svg class="ico"><use href="#i-eraser"/></svg></button></td>
     </tr>`).join('');
   $('btnAdd').disabled = list.length >= MAX_SYMBOLS;
   for (const x of list) updateAlertRow(x.code);
@@ -501,6 +503,14 @@ $('listBody').addEventListener('click', (e) => {
   if (!tr) return;
   const code = tr.dataset.code;
   const item = list.find((x) => x.code === code);
+  if (e.target.closest('.clr')) {
+    // アラート設定の消しゴム：設定株価を消してアラートを OFF にする（銘柄は消さない）
+    delete item.alertPrice;
+    delete item.alertOn;
+    saveList();
+    updateAlertRow(code);
+    return;
+  }
   if (e.target.closest('.del')) {
     ask(`${code} ${item.name} を一覧から削除しますか？`, { ok: '削除する', danger: true }).then((yes) => {
       if (!yes) return;
@@ -558,10 +568,17 @@ function setAlertMode(on) {
 }
 $('btnAlertMode').addEventListener('click', () => setAlertMode(!alertMode));
 $('btnAlertBack').addEventListener('click', () => setAlertMode(false));
-$('btnAlertDone').addEventListener('click', () => closeSettings());
+$('btnAlertDone').addEventListener('click', () => closeSettings(false));
 $('chkAlertPopup').addEventListener('change', (e) => { settings.alertPopup = e.target.checked; save(KEY.settings, settings); });
-$('chkAlertSound').addEventListener('change', (e) => { settings.alertSound = e.target.checked; save(KEY.settings, settings); if (e.target.checked) playChime(); });
-$('btnAlertTest').addEventListener('click', () => playChime());
+$('chkAlertSound').addEventListener('change', (e) => { settings.alertSound = e.target.checked; save(KEY.settings, settings); if (!e.target.checked) stopAlarm(); });
+// 音の確認：2回分（約3秒）鳴らす。鳴っている間にもう一度押すと止める
+$('btnAlertTest').addEventListener('click', () => { if (alarmPlaying()) stopAlarm(); else playAlarm(3); });
+// ポップアップの確認：見本のカードを出す（音は鳴らさない）
+$('btnPopupTest').addEventListener('click', () => {
+  const x = list.find((i) => prices[i.code] != null) || list[0] || { code: '7203', name: 'トヨタ自動車' };
+  const price = prices[x.code] ?? 1000;
+  showAlertCard({ code: x.code, name: x.name, target: x.alertPrice || price, price, dir: 'up', at: Date.now(), us: isUS(x.code), test: true });
+});
 
 const rowOf = (code) => $('listBody').querySelector(`tr[data-code="${CSS.escape(code)}"]`);
 function updateAlertRow(code) {
@@ -577,6 +594,7 @@ function updateAlertRow(code) {
   inp.disabled = !on; // アラートが OFF の間は入力できない
   if (document.activeElement !== inp) inp.value = x.alertPrice ? fmtNum(x.alertPrice, us) : '';
   tr.querySelector('.tgt-box').classList.toggle('off', !on);
+  tr.querySelector('.clr').disabled = !x.alertPrice && !on;
   // ▲：今より上に設定（上抜けで通知） ／ ▼：今より下に設定（下抜けで通知）
   const T = x.alertPrice;
   const d = T && cur != null ? (T > cur ? 'up' : T < cur ? 'down' : '') : '';
@@ -622,7 +640,7 @@ function fireAlert(x, dir, price) {
   delete x.alertOn; // 1回通知したら OFF（設定株価の付近で上下しても何度も鳴らないように）
   saveList();
   if (settings.alertPopup) showAlertCard({ code: x.code, name: x.name, target, price, dir, at: Date.now(), us: isUS(x.code) });
-  if (settings.alertSound) playChime();
+  if (settings.alertSound) playAlarm(30); // 約30秒鳴らす（通知を消すと止まる）
 }
 D.onPrice((code, price) => {
   const prev = prices[code];
@@ -899,8 +917,8 @@ netDlg.addEventListener('click', (e) => { if (e.target === netDlg) netDlg.close(
 D.onNetLog(() => { renderNet(); updateStatus(); });
 setInterval(renderNet, 1000);
 $('btnMenu').addEventListener('click', openSettings);
-$('btnClose').addEventListener('click', closeSettings);
-$('btnSave').addEventListener('click', closeSettings);
+$('btnClose').addEventListener('click', () => closeSettings(false));
+$('btnSave').addEventListener('click', () => closeSettings(true));
 $('btnPause').addEventListener('click', () => { st.paused = !st.paused; persistState(); renderCountdown(); });
 $('btnPrev').addEventListener('click', () => go(-1));
 $('btnNext').addEventListener('click', () => go(1));
@@ -918,7 +936,12 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowLeft') go(-1);
   else if (e.key === ' ') { e.preventDefault(); $('btnPause').click(); }
 });
-document.addEventListener('pointerdown', () => { keepAwake(); unlockAudio(); }, { passive: true });
+document.addEventListener('pointerdown', (e) => {
+  keepAwake();
+  unlockAudio();
+  // ポップアップを出さない設定で音だけ鳴っているときは、画面に触れたら止める
+  if (alarmPlaying() && !document.querySelector('.alert-card') && !e.target.closest?.('#btnAlertTest')) stopAlarm();
+}, { passive: true });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
   keepAwake();
@@ -1034,7 +1057,8 @@ $('btnImport').addEventListener('click', async () => {
     saveList();
     fillSettings();
     renderList();
-    toast('読み込みました。「設定を保存して戻る」で反映されます');
+    takeSnapshot();
+    toast('読み込みました');
   } catch { ask('読み込めませんでした。コピーした文字をそのまま貼り付けてください。', { alert: true }); }
 });
 

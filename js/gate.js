@@ -23,7 +23,7 @@ async function sha256(text) {
 function startApp() {
   document.body.classList.remove('locked');
   document.getElementById('gate')?.remove();
-  import('./app.js?v=20261125124411');
+  import('./app.js?v=20261125125450');
 }
 
 function showGate() {
