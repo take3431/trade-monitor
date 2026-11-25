@@ -187,7 +187,10 @@ function updateStatus(now = Date.now()) {
   $('updatedAt').textContent = e?.fetchedAt ? `${M.fmtStamp(e.fetchedAt, now)} 更新` : '';
   const errEl = $('errText');
   errEl.hidden = !err;
-  if (err) { errEl.textContent = e ? '通信エラー：前回データを表示中' : '通信エラー：データ未取得（再試行します）'; errEl.title = String(err.message || err); }
+  if (err) {
+    errEl.textContent = (e ? '通信エラー：前回データを表示中' : '通信エラー：データ未取得') + '（タップで詳細）';
+    errEl.title = String(err.message || err);
+  }
 }
 
 function renderCountdown(now = Date.now()) {
@@ -530,6 +533,10 @@ $('addForm').addEventListener('submit', (e) => {
 });
 
 /* ---------------- イベント ---------------- */
+$('errText').addEventListener('click', () => {
+  if (!st.lastError) return;
+  alert(`データを取得できませんでした。\n\n${String(st.lastError.message || st.lastError).split(' / ').join('\n')}\n\n公開プロキシは停止・有料化されていることがあります。設定画面の「CORSプロキシURL」に、ご自身の Cloudflare Worker の URL を設定してください（README 参照）。`);
+});
 $('btnMenu').addEventListener('click', openSettings);
 $('btnClose').addEventListener('click', closeSettings);
 $('btnSave').addEventListener('click', closeSettings);

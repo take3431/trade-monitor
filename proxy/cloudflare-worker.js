@@ -20,10 +20,16 @@ export default {
     if (u.protocol !== 'https:' || !ALLOW_HOSTS.includes(u.hostname)) {
       return new Response('forbidden', { status: 403, headers: cors });
     }
-    const r = await fetch(u.toString(), {
+    const get = (url) => fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
       cf: { cacheTtl: 30, cacheEverything: true },
     });
+    let r = await get(u.toString());
+    // query1 が回数制限(429)等で失敗したら query2 で再試行
+    if (!r.ok && u.hostname === 'query1.finance.yahoo.com') {
+      u.hostname = 'query2.finance.yahoo.com';
+      r = await get(u.toString());
+    }
     const h = new Headers(cors);
     h.set('Content-Type', r.headers.get('Content-Type') || 'application/json');
     h.set('Cache-Control', 'public, max-age=30');

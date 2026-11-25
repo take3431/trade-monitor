@@ -44,23 +44,31 @@ async function fetchJson(url) {
   if (cfg.proxy) list.push(cfg.proxy.trim());
   if (cfg.fallback || !list.length) for (const p of BUILTIN_PROXIES) if (!list.includes(p)) list.push(p);
   if (preferred && list.includes(preferred)) list = [preferred, ...list.filter((p) => p !== preferred)];
-  let lastErr;
+  const reasons = [];
   for (const tpl of list) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), cfg.timeout);
+    let host = tpl;
+    try { host = tpl === 'direct' ? 'direct' : new URL(tpl.replace(/\{(raw)?url\}/, '')).hostname; } catch { /* keep */ }
     try {
       const r = await fetch(proxied(tpl, url), { signal: ctrl.signal, cache: 'no-store' });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (!r.ok) {
+        const why = r.status === 401 || r.status === 403 ? 'APIキー必要/拒否' : r.status === 429 ? '回数制限' : `HTTP ${r.status}`;
+        throw new Error(why);
+      }
       const j = await r.json();
       preferred = tpl;
       return j;
     } catch (e) {
-      lastErr = e.name === 'AbortError' ? new Error('タイムアウト') : e;
+      const why = e.name === 'AbortError' ? 'タイムアウト' : e instanceof SyntaxError ? '応答形式不正' : e.message === 'Failed to fetch' || e.name === 'TypeError' ? '接続不可' : e.message;
+      reasons.push(`${host}: ${why}`);
     } finally {
       clearTimeout(timer);
     }
   }
-  throw lastErr || new Error('取得失敗');
+  const err = new Error(reasons.join(' / ') || '取得失敗');
+  err.proxyFailure = true;
+  throw err;
 }
 
 /* ---------------- IndexedDB ---------------- */
