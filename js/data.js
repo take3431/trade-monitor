@@ -8,8 +8,8 @@
 //     以後は直近1か月分の小さなデータだけを取りに行き、手元のデータに継ぎ足す。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261125114617';
-import { isUS } from './names.js?v=20261125114617';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261125115206';
+import { isUS } from './names.js?v=20261125115206';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = (code) => (isUS(code) ? code : `${code}.T`);

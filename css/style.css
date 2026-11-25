@@ -288,15 +288,14 @@ tr.drag-placeholder td > * { visibility: hidden; }
 .net-summary .k { font-size: .72rem; color: var(--muted); }
 .net-summary b { font-size: 1.1rem; font-variant-numeric: tabular-nums; }
 .net-summary .u { font-size: .72rem; color: var(--muted); }
-.net-now { font-size: .82rem; line-height: 1.6; background: var(--surface2); border-radius: 8px; padding: .5rem .7rem; }
+.net-spec { display: grid; grid-template-columns: auto 1fr; gap: .2rem .9rem; margin: 0; font-size: .82rem; line-height: 1.55; background: var(--surface2); border-radius: 8px; padding: .5rem .7rem; }
+.net-spec dt { color: var(--muted); white-space: nowrap; }
+.net-spec dd { margin: 0; }
 .net-log-wrap { flex: 1; min-height: 6rem; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
 .net-log { width: 100%; border-collapse: collapse; font-size: .8rem; }
 .net-log th { position: sticky; top: 0; background: var(--surface2); text-align: left; padding: .35rem .5rem; font-weight: 600; }
 .net-log td { padding: .35rem .5rem; border-top: 1px solid var(--border); vertical-align: top; }
 .net-log tr.ng td { background: color-mix(in srgb, var(--warn) 8%, transparent); }
-.net-rules { font-size: .8rem; color: var(--muted); }
-.net-rules summary { cursor: pointer; color: var(--text); }
-.net-rules ul { margin: .4rem 0 0; padding-left: 1.2rem; line-height: 1.6; }
 
 #transferSection .row { justify-content: flex-start; }
 

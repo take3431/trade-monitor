@@ -1,7 +1,7 @@
-import * as M from './market.js?v=20261125114617';
-import * as D from './data.js?v=20261125114617';
-import { Stage, themeColors } from './chart.js?v=20261125114617';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125114617';
+import * as M from './market.js?v=20261125115206';
+import * as D from './data.js?v=20261125115206';
+import { Stage, themeColors } from './chart.js?v=20261125115206';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125115206';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -753,26 +753,6 @@ function renderNet() {
     <div><span class="k">最終通信</span><b>${ns.lastAt ? M.fmtStamp(ns.lastAt, now) : '—'}</b></div>
     <div><span class="k">保存データ</span><b>${storageText}</b></div>
     <div><span class="k">状態</span><b>${ns.active ? '通信中' : ns.pausedUntil ? '一時停止中' : '待機中'}</b>${ns.queued ? `<span class="u">待ち${ns.queued}件</span>` : ''}</div>`;
-  // これからの予定
-  const lines = [];
-  const cur = st.code;
-  if (cur) {
-    const m = marketOf(cur);
-    const ph = M.marketPhase(now, m);
-    const e = stages[front].entries?.[settings.leftTf] || stages[front].entries?.[settings.rightTf];
-    const age = e?.fetchedAt ? Math.round((now - e.fetchedAt) / 1000) : null;
-    if (!ph.open) lines.push(`表示中の ${esc(cur)}：${m === 'US' ? '米国' : '東証'}は${ph.label}です。引け後のデータを取得済みなら通信しません。`);
-    else if (age != null) lines.push(`表示中の ${esc(cur)}：${age < 60 ? `${age}秒` : `${Math.floor(age / 60)}分`}前に取得。${age >= CACHE_MIN * 60 ? '次に表示するときに最新化します。' : `あと${Math.max(0, CACHE_MIN * 60 - age)}秒は通信しません。`}`);
-    const next = neighbor(1);
-    if (next && next !== cur) {
-      const lead = Math.min(PREFETCH_SEC, settings.interval - 2);
-      const wait = st.remaining - lead;
-      lines.push(pauseReason(now) ? `次の ${esc(next)}：自動切替が止まっているため事前取得は待機中` : wait > 0 ? `次の ${esc(next)}：あと${wait}秒で事前取得（必要な場合のみ）` : `次の ${esc(next)}：事前取得済み、または取得不要`);
-    }
-  }
-  const missing = list.filter((x) => x.enabled && !haveData.has(x.code)).length;
-  lines.push(missing ? `データ未取得の銘柄：約${missing}件を8秒に1件ずつ取得中` : '全銘柄のデータを取得済み（裏での取得はありません）');
-  $('netNow').innerHTML = lines.map((l) => `<div>・${l}</div>`).join('');
   const log = D.netLog();
   $('netLogBody').innerHTML = log.length ? log.slice(0, 40).map((x) => `
     <tr class="${x.ok ? '' : 'ng'}">
