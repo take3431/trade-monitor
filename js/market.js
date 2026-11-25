@@ -3,7 +3,7 @@ const H = 3600e3;
 const MIN = 60e3;
 
 // 休場日は js/holidays.js（tools/gen-holidays.py で生成、2040年まで）
-import { JP_HOLIDAYS as HOLIDAYS, US_HOLIDAYS, US_EARLY_CLOSE } from './holidays.js?v=20261125120554';
+import { JP_HOLIDAYS as HOLIDAYS, US_HOLIDAYS, US_EARLY_CLOSE } from './holidays.js?v=20261125121301';
 
 // 前場 9:00-11:30 / 後場 12:30-15:30（分単位）
 const AM = [540, 690];
@@ -84,7 +84,7 @@ export function isFresh(fetchedAt, ttlMs, now = Date.now(), market = 'JP') {
 /* ---------------- 米国市場（NYSE / NASDAQ） ----------------
    通常取引 9:30〜16:00（米国東部時間）。夏時間は端末の Intl で自動判定。
    休場日・短縮取引日（13:00 引け）は js/holidays.js の表で判定する。 */
-const US_SETTLE_MS = 5 * MIN;
+const US_SETTLE_MS = 15 * MIN; // 引け後の終値の確定（クロージング・オークションの反映）を待つ余裕
 const etFmt = typeof Intl !== 'undefined'
   ? new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour12: false, weekday: 'short', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric' })
   : null;

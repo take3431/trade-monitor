@@ -1,7 +1,7 @@
-import * as M from './market.js?v=20261125120554';
-import * as D from './data.js?v=20261125120554';
-import { Stage, themeColors } from './chart.js?v=20261125120554';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125120554';
+import * as M from './market.js?v=20261125121301';
+import * as D from './data.js?v=20261125121301';
+import { Stage, themeColors } from './chart.js?v=20261125121301';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125121301';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -125,22 +125,11 @@ function neighbor(delta, from = st.code) {
   }
   return null;
 }
-// この先表示する銘柄（次の次から n 件）
 // 次に表示する銘柄から n 件
 function upcomingFrom(n) {
   const out = [];
   let code = st.code;
   for (let i = 0; i < n; i++) {
-    code = neighbor(1, code);
-    if (!code || code === st.code || out.includes(code)) break;
-    out.push(code);
-  }
-  return out;
-}
-function upcoming(n) {
-  const out = [];
-  let code = neighbor(1);
-  for (let i = 0; i < n && code; i++) {
     code = neighbor(1, code);
     if (!code || code === st.code || out.includes(code)) break;
     out.push(code);
@@ -268,11 +257,11 @@ function tick() {
 }
 
 /* ---------------- 裏での先回り取得 ----------------
-   表示を待たずに、登録銘柄のチャートデータを1件ずつ順番に取得・更新しておく。
-   未取得の銘柄を優先し、場中は15分以上古いものだけを更新する（通信量を抑えるため）。 */
+   表示を待たずに、まだデータの無い銘柄だけを8秒に1件ずつ取得しておく。
+   すでにデータのある銘柄の最新化は、表示の30秒前の事前取得（まとめて取得）に任せる。 */
 const WARM_EVERY_MS = 8000;
 const WARM_MAX_AGE = 10 * 60e3;
-let warmAt = 0, warmBusy = false, warmCursor = 0;
+let warmAt = 0, warmBusy = false;
 const haveData = new Set(); // データ取得済みと確認できた銘柄（毎回の確認を省くため）
 async function warmTick(now) {
   if (warmBusy || st.settingsOpen || document.hidden || now - warmAt < WARM_EVERY_MS || !D.isIdle()) return;
@@ -742,7 +731,6 @@ $('addForm').addEventListener('submit', (e) => {
 /* ---------------- イベント ---------------- */
 /* ---------------- 通信状況ダイアログ ---------------- */
 const netDlg = $('netDialog');
-const KIND_SHORT = (w) => w;
 function renderNet() {
   if (!netDlg.open) return;
   const now = Date.now();
@@ -758,7 +746,7 @@ function renderNet() {
     <tr class="${x.ok ? '' : 'ng'}">
       <td class="num">${M.fmtClock(x.t)}</td>
       <td>${esc(x.code)}</td>
-      <td>${esc(KIND_SHORT(x.what))}<div class="muted small">${esc(x.route)}</div></td>
+      <td>${esc(x.what)}<div class="muted small">${esc(x.route)}</div></td>
       <td>${x.ok ? `成功 <span class="muted">${(x.ms / 1000).toFixed(1)}秒</span>` : `<span class="err">失敗</span>`}${x.note ? `<div class="muted small">${esc(x.note)}</div>` : ''}</td>
     </tr>`).join('') : '<tr><td colspan="4" class="muted">この画面を開いてからの通信はまだありません（保存済みのデータで表示中）</td></tr>';
 }

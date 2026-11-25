@@ -9,8 +9,8 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261125120554';
-import { isUS } from './names.js?v=20261125120554';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261125121301';
+import { isUS } from './names.js?v=20261125121301';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = (code) => (isUS(code) ? code : `${code}.T`);
@@ -94,9 +94,6 @@ function routeFail(r, status) {
   const ms = status === 401 || status === 403 ? 30 * 60e3 : status === 429 ? 90e3 : 20e3;
   cooldown.set(r.id, Date.now() + ms);
   if (status === 429) pauseAll(15e3); // 回数制限を受けたら全体の通信も少し止める
-}
-export function routeStatus() {
-  return [customRoute(), ...ROUTES].filter(Boolean).map((r) => `${r.label}: ${Math.round(r.score * 100)}%${cooldown.get(r.id) > Date.now() ? '（休止中）' : ''}`);
 }
 
 const HEDGE_MS = 6000;
@@ -539,7 +536,7 @@ function refreshBase(code, prio) {
     let parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=${range}&includeAdjustedClose=false`,
       { code, prio, what: full ? why : `日足の更新（直近${range === '5d' ? '5日' : '1か月'}）` }));
     // 継ぎ足し分に含まれる確定済みの過去の終値が、保存済みと食い違えば分割・併合 → 10年分を取り直す
-    if (!full && splitDetected(base.bars, parsed.bars.slice(0, -1).map((b) => [b[0], b[4]]))) {
+    if (!full && splitDetected(base.bars, parsed.bars.slice(0, -1).map((b) => [b[0], b[4]])) && takeSplitRefetch(code)) {
       full = true;
       parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=10y&includeAdjustedClose=false`,
         { code, prio, what: '日足10年分（分割・併合を検知して取り直し）' }));
@@ -607,12 +604,15 @@ function sparkResults(json) {
    Yahoo の過去の株価は、分割・併合があると分割後の基準に書き換わる。手元に保存した過去分は古い基準のままなので、
    そのまま継ぎ足すとチャートに段差ができる。新しく届いた「確定済みの過去の終値」と保存済みの終値を同じ日で比べ、
    3%以上食い違う日があれば分割・併合が起きたと判断して、その銘柄だけ10年分を取り直す（追加の通信は取り直しの1回だけ）。
-   ※通常、確定済みの終値は変わらない（配当では close は調整されない）。 */
+   ※通常、確定済みの終値は変わらない（配当では close は調整されない）。
+   ※保存済みの最後の1本は比べない。場中に取得したまま引け後に取り直していないと、終値ではなく場中の値が
+     入っており、値動きの大きい日に分割と誤判定するため（分割なら、それより前の日でも同じようにずれる）。
+   ※同じ銘柄の取り直しは1日1回まで（Yahoo 側のデータが一時的に食い違っても、何度も取り直さないため）。 */
 const SPLIT_TOLERANCE = 0.03;
 function splitDetected(storedBars, pairs) {
   // pairs: [[timestamp(秒), 終値], ...]（当日分は値が動くので含めない）
   if (!storedBars?.length || !pairs.length) return false;
-  const byDay = new Map(storedBars.slice(-40).map((b) => [dayKey(b[0] * 1000), b[4]]));
+  const byDay = new Map(storedBars.slice(-40, -1).map((b) => [dayKey(b[0] * 1000), b[4]]));
   for (const [t, c] of pairs) {
     const old = byDay.get(dayKey(t * 1000));
     if (old == null || c == null || !old || !c) continue;
@@ -620,9 +620,21 @@ function splitDetected(storedBars, pairs) {
   }
   return false;
 }
+const SPLIT_KEY = 'tm.splitrefetch.v1';
+// 今日まだ取り直していなければ true を返し、取り直した印を付ける
+function takeSplitRefetch(code) {
+  const today = dayKey(Date.now());
+  let g = { d: '', codes: [] };
+  try { g = JSON.parse(localStorage.getItem(SPLIT_KEY)) || g; } catch { /* ignore */ }
+  if (g.d !== today) g = { d: today, codes: [] };
+  if (g.codes.includes(code)) return false;
+  g.codes.push(code);
+  try { localStorage.setItem(SPLIT_KEY, JSON.stringify(g)); } catch { /* ignore */ }
+  return true;
+}
 const needsFull = (b) => !b?.bars?.length || Date.now() - (b.fullAt || 0) > 30 * 86400e3;
 
-function mergeSpark(base, x, approxOpen) {
+function mergeSpark(base, x, approxOpen, code) {
   const ts = x.timestamp;
   const lastT = ts[ts.length - 1];
   const today = dayKey(lastT * 1000);
@@ -635,7 +647,7 @@ function mergeSpark(base, x, approxOpen) {
   const m = x.meta;
   const closes = x.indicators?.quote?.[0]?.close || [];
   // 当日より前の終値（確定済み）を保存済みの値と比べて、分割・併合を検知
-  if (splitDetected(bars, ts.slice(0, -1).map((t, i) => [t, closes[i]]))) return { need: 'split' };
+  if (splitDetected(bars, ts.slice(0, -1).map((t, i) => [t, closes[i]])) && takeSplitRefetch(code)) return { need: 'split' };
   const price = m.regularMarketPrice ?? closes[closes.length - 1];
   if (price == null) return { need: 'gap' };
   let open;
@@ -645,7 +657,13 @@ function mergeSpark(base, x, approxOpen) {
   const high = Math.max(m.regularMarketDayHigh ?? price, open, price);
   const low = Math.min(m.regularMarketDayLow ?? price, open, price);
   const bar = [lastDay === today ? last[0] : lastT, open, high, low, price, m.regularMarketVolume ?? (lastDay === today ? last[5] : 0)];
-  const daily = lastDay === today ? bars.slice(0, -1).concat([bar]) : bars.concat([bar]);
+  let prevBars = bars;
+  if (lastDay !== today && ts.length >= 2 && dayKey(ts[ts.length - 2] * 1000) === lastDay && closes[closes.length - 2] != null) {
+    // 前日の足が場中の値のまま保存されていることがあるので、確定した終値で直す（前日比がずれないように）
+    const c = closes[closes.length - 2];
+    prevBars = bars.slice(0, -1).concat([[last[0], last[1], Math.max(last[2], c), Math.min(last[3], c), c, last[5]]]);
+  }
+  const daily = lastDay === today ? bars.slice(0, -1).concat([bar]) : prevBars.concat([bar]);
   return { daily, meta: { ...base.meta, price, time: m.regularMarketTime ?? base.meta?.time } };
 }
 
@@ -679,7 +697,7 @@ async function runBatch(codes, prio) {
     const x = results.get(ySym(c));
     const base = bases.get(c);
     if (!x || !base?.bars?.length) { leftover.add(c); continue; }
-    const m = mergeSpark(base, x, cfg.approxOpen);
+    const m = mergeSpark(base, x, cfg.approxOpen, c);
     if (m.need === 'open' && cfg.approxOpen) { needOpen.push(c); pending.push([c, x, base]); continue; }
     if (m.need === 'split') {
       // 取り直すまでの間も表示は続けられるよう、データは残したまま「要取り直し」の印を付ける
@@ -694,7 +712,7 @@ async function runBatch(codes, prio) {
   if (needOpen.length) {
     try { await schedule(prio, () => fetchApproxOpens(needOpen, prio)); } catch { /* 取れなければ個別取得へ */ }
     for (const [c, x, base] of pending) {
-      const m = mergeSpark(base, x, true);
+      const m = mergeSpark(base, x, true, c);
       if (m.need) leftover.add(c); else await saveMerged(c, base, m, now);
     }
   }
@@ -784,13 +802,6 @@ export async function loadSet(code, tfs, { force = false, onEntry = null, prio =
     failures.delete(code);
   }
   return { entries, fetched, changed, error };
-}
-
-// 現在値（新規登録時の確認用）
-export function quoteFrom(entry) {
-  if (!entry?.bars?.length) return null;
-  const last = entry.bars[entry.bars.length - 1];
-  return { price: entry.meta?.price ?? last[4], name: entry.meta?.name || '' };
 }
 
 // 現在値・前日比：取得済みの日足から計算する（追加の通信はしない）
