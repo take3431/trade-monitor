@@ -5,11 +5,12 @@
 //     応答が遅いときは別経路も並行して試し、先に返った方を採用する（ヘッジ要求）。
 //     失敗した経路は一定時間休ませ、Yahoo の窓口 query1 / query2 も交互に使う。
 //  2. 通信量の削減：日足10年分を1回だけ取得し、週足・月足はアプリ内で集計する。
-//     以後は直近1か月分の小さなデータだけを取りに行き、手元のデータに継ぎ足す。
+//     以後は通常、直近5日分の小さなデータだけを取りに行き（4日以上空いたときは1か月分）、手元のデータに継ぎ足す。
+//     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261125115206';
-import { isUS } from './names.js?v=20261125115206';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261125120554';
+import { isUS } from './names.js?v=20261125120554';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = (code) => (isUS(code) ? code : `${code}.T`);
@@ -535,12 +536,12 @@ function refreshBase(code, prio) {
     // 継ぎ足しは通常「直近5日分」だけ（約1KB）。4日以上空いたときは1か月分
     const range = full ? '10y' : now - lastT < 4 * 86400e3 ? '5d' : '1mo';
     const why = !base?.bars?.length ? '日足10年分（初回）' : base.fullAt === 0 ? '日足10年分（分割・併合の反映）' : '日足10年分（定期の取り直し）';
-    let parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=${range}`,
+    let parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=${range}&includeAdjustedClose=false`,
       { code, prio, what: full ? why : `日足の更新（直近${range === '5d' ? '5日' : '1か月'}）` }));
     // 継ぎ足し分に含まれる確定済みの過去の終値が、保存済みと食い違えば分割・併合 → 10年分を取り直す
     if (!full && splitDetected(base.bars, parsed.bars.slice(0, -1).map((b) => [b[0], b[4]]))) {
       full = true;
-      parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=10y`,
+      parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=10y&includeAdjustedClose=false`,
         { code, prio, what: '日足10年分（分割・併合を検知して取り直し）' }));
     }
     const daily = full ? dedupeDaily(parsed.bars) : mergeTail(base.bars, parsed.bars);
