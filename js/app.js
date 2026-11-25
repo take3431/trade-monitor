@@ -1,7 +1,7 @@
-import * as M from './market.js';
-import * as D from './data.js';
-import { Stage, themeColors } from './chart.js';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js';
+import * as M from './market.js?v=20261125063826';
+import * as D from './data.js?v=20261125063826';
+import { Stage, themeColors } from './chart.js?v=20261125063826';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, JP_RE, US_RE } from './names.js?v=20261125063826';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -834,3 +834,19 @@ $('btnImport').addEventListener('click', () => {
     toast('読み込みました。「設定を保存して戻る」で反映されます');
   } catch { alert('読み込めませんでした。コピーした文字をそのまま貼り付けてください。'); }
 });
+
+/* ---------------- 新しい版の自動読み込み ----------------
+   開きっぱなしの端末でも、アプリを更新したら自動で新しい版に切り替える。
+   15分に1回、小さなファイル（version.json、GitHub 上）を確認するだけで、株価の取得先には通信しない。 */
+const APP_VERSION = document.querySelector('meta[name="app-version"]')?.content || '0';
+async function checkUpdate() {
+  if (document.hidden || st.settingsOpen || userIsTouching() || netDlg.open || dlg.open) return;
+  try {
+    const r = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!r.ok) return;
+    const { version } = await r.json();
+    if (version && APP_VERSION !== '0' && version !== APP_VERSION) location.reload();
+  } catch { /* オフライン等は無視 */ }
+}
+setInterval(checkUpdate, 15 * 60e3);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });
