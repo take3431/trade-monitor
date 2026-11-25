@@ -3,7 +3,7 @@ const H = 3600e3;
 const MIN = 60e3;
 
 // 休場日は js/holidays.js（tools/gen-holidays.py で生成、2040年まで）
-import { JP_HOLIDAYS as HOLIDAYS, US_HOLIDAYS, US_EARLY_CLOSE } from './holidays.js?v=20261125164254';
+import { JP_HOLIDAYS as HOLIDAYS, US_HOLIDAYS, US_EARLY_CLOSE } from './holidays.js?v=20261125170634';
 
 // 前場 9:00-11:30 / 後場 12:30-15:30（分単位）
 const AM = [540, 690];
@@ -37,8 +37,8 @@ export function isTradingDay(y, m, d) {
 
 export function marketPhase(now = Date.now(), market = 'JP') {
   if (market === 'US') return usPhase(now);
-  // 海外の指数・為替・暗号資産：取引時間で止めない（表示中に2分以上たっていれば最新化）
-  if (market === 'X') return { open: true, code: 'open', label: '取引中' };
+  if (market === 'C') return { open: true, code: 'open', label: '取引中（24時間）' }; // 暗号資産は土日も動く
+  if (market === 'X') return xPhase(now);
   const p = jst(now);
   if (!isTradingDay(p.y, p.m, p.d)) return { open: false, code: 'holiday', label: '休場日' };
   if (p.min < AM[0]) return { open: false, code: 'pre', label: '取引開始前' };
@@ -71,17 +71,37 @@ export function lastSessionEnd(now = Date.now()) {
 // （9:20〜11:50、12:50〜15:50）。寄り付き直後の20分や昼休み明けの20分に通信しても値は変わらない。
 export const JP_DELAY_MS = 20 * MIN;
 export function dataLive(now = Date.now(), market = 'JP') {
-  if (market === 'X') return true; // 海外の指数・為替・暗号資産は時間で止めない
+  if (market === 'C') return true;              // 暗号資産は止めない
+  if (market === 'X') return xPhase(now).open;   // 海外の指数・為替・商品は土日だけ止める
   return market === 'US' ? marketPhase(now, 'US').open : marketPhase(now - JP_DELAY_MS, 'JP').open;
 }
 export function isFresh(fetchedAt, ttlMs, now = Date.now(), market = 'JP') {
   if (!fetchedAt) return false;
   if (!dataLive(now, market)) {
-    const end = market === 'US' ? usLastClose(now) : lastSessionEnd(now - JP_DELAY_MS);
-    const settle = end + (market === 'US' ? US_SETTLE_MS : SETTLE_MS);
+    const end = market === 'US' ? usLastClose(now) : market === 'X' ? xLastClose(now) : lastSessionEnd(now - JP_DELAY_MS);
+    const settle = end + (market === 'US' ? US_SETTLE_MS : market === 'X' ? 5 * MIN : SETTLE_MS);
     if (now >= settle) return fetchedAt >= settle;
   }
   return now - fetchedAt < ttlMs;
+}
+
+/* ---------------- 海外の指数・為替・商品 ----------------
+   為替は日本時間の土曜朝〜月曜朝が休み。海外の株価指数・商品先物もこの間は動かないので、
+   土曜7:00〜月曜7:00（日本時間）は「週末の休み」とし、その前に取得済みなら通信しない。
+   （各国の祝日は判定しない。祝日は値が変わらないだけで、表示には影響しない） */
+const X_WEEKEND_START = 7 * 60; // 土曜7:00
+function xPhase(now) {
+  const p = jst(now);
+  const weekend = (p.dow === 6 && p.min >= X_WEEKEND_START) || p.dow === 0 || (p.dow === 1 && p.min < X_WEEKEND_START);
+  return weekend ? { open: false, code: 'holiday', label: '週末の休み' } : { open: true, code: 'open', label: '取引中' };
+}
+// 直近の「週末の休み」の始まり（土曜7:00 日本時間）
+function xLastClose(now) {
+  const p = jst(now);
+  const midnight = Date.UTC(p.y, p.m - 1, p.d) - 9 * H;
+  let t = midnight - ((p.dow - 6 + 7) % 7) * 24 * H + X_WEEKEND_START * MIN;
+  if (t > now) t -= 7 * 24 * H;
+  return t;
 }
 
 /* ---------------- 米国市場（NYSE / NASDAQ） ----------------

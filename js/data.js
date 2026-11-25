@@ -9,8 +9,8 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261125164254';
-import { yahooSymbol, marketOfCode } from './names.js?v=20261125164254';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261125170634';
+import { yahooSymbol, marketOfCode } from './names.js?v=20261125170634';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = yahooSymbol;
@@ -34,7 +34,10 @@ const cfg = {
   proxy: '', fallback: true, demo: false, ttlMs: 120e3, timeout: 15000,
   approxOpen: false,          // true：当日の始値を近似する（表示対象が多いとき。openMode で取り方を決める）
   openMode: 'exact',          // 始値：exact＝1銘柄ずつ正確に ／ 1m・5m・15m＝最初の1分・5分・15分の値 ／ prev＝前日の終値で代用（通信なし）
-  fullDays: 150,              // 10年分の定期の取り直しの間隔（日。銘柄ごとに最大59日ずらす）
+  fullDays: 730,              // 10年分の定期の取り直しの間隔（日。銘柄ごとに最大59日ずらす）
+  fixDays: 27,                // 近似した始値を、直近1か月分の正確な日足で直す間隔（日）
+  ttl5Ms: 5 * 60e3,           // 5分足の有効時間（銘柄数・切り替え間隔に応じて延ばす）
+  cap5: 1000,                 // 5分足を取る回数の1日の上限（通信量・回数の上限に収めるため）
   liveAhead: 5,               // 取引時間中、まとめて取得に含めるのは「この先この件数以内に表示する銘柄」だけ
   upcoming: () => [],         // この先表示される銘柄（まとめて取得の対象を選ぶのに使う）
 };
@@ -97,9 +100,25 @@ function routeOk(r) { r.score = r.score * 0.7 + 0.3; cooldown.delete(r.id); }
    ・回数制限（429）を受けたら全体を止める。30分以内に続けて受けるほど長く（15秒→1分→5分→30分）。
      相手が「何秒待って」と返してきたら（Retry-After）、それより短くはしない。
    ・10分間に通信の失敗が5回以上あったら、表示中の銘柄以外の通信（先読み・裏の取り込み）を30分止める。 */
+const COOL_KEY = 'tm.cool.v1';
 const rateHits = [];
 const failTimes = [];
 let softHold = 0;
+// 止める時刻と、最近回数制限を受けた時刻は保存しておく（12時間ごとの読み込み直し・版の更新・タブの交代でも続ける）
+function saveCool() {
+  try { localStorage.setItem(COOL_KEY, JSON.stringify({ hold, soft: softHold, hits: rateHits })); } catch { /* ignore */ }
+}
+function loadCool() {
+  try {
+    const c = JSON.parse(localStorage.getItem(COOL_KEY));
+    if (!c) return;
+    const now = Date.now();
+    if (c.hold > now) hold = Math.max(hold, c.hold);
+    if (c.soft > now) softHold = Math.max(softHold, c.soft);
+    for (const t of c.hits || []) if (now - t < 30 * 60e3 && !rateHits.includes(t)) rateHits.push(t);
+    rateHits.sort((a, b) => a - b);
+  } catch { /* ignore */ }
+}
 const quietError = (msg, flag) => Object.assign(new Error(msg), { quiet: true, [flag]: true });
 // 通信を控えている最中か（回数制限で全体を止めている間も含む）
 export const cooling = () => softHold > Date.now() || hold > Date.now();
@@ -109,6 +128,7 @@ function noteFailure() {
   failTimes.push(now);
   if (failTimes.length >= 5 && softHold < now) {
     softHold = now + 30 * 60e3;
+    saveCool();
     record({ t: now, code: '—', what: '失敗が続いたため、表示中の銘柄以外の通信を30分控えます', route: '—', ok: true, ms: 0, note: '' });
   }
 }
@@ -119,6 +139,7 @@ function routeFail(r, status, retryAfterMs = 0, countHit = true) {
   if (status === 429) {
     while (rateHits.length && now - rateHits[0] > 30 * 60e3) rateHits.shift();
     if (countHit || !rateHits.length) rateHits.push(now);
+    saveCool();
     const step = [15e3, 60e3, 5 * 60e3, 30 * 60e3][Math.min(rateHits.length - 1, 3)];
     const wait = Math.max(step, Math.min(retryAfterMs, 60 * 60e3));
     cooldown.set(r.id, now + Math.max(90e3, wait));
@@ -154,6 +175,7 @@ function checkLeader() {
       leader = false;
     } else if (mine || !cur || now - cur.t > 10e3) {
       localStorage.setItem(LEADER_KEY, JSON.stringify({ id: TAB_ID, t: now }));
+      if (!leader) loadCool(); // 通信役を引き継いだら、前の通信役が止めていた分も守る
       leader = true;
     } else {
       leader = false;
@@ -161,6 +183,7 @@ function checkLeader() {
   } catch { leader = true; } // 保存できない環境では、今までどおり通信する
 }
 export const isLeader = () => { checkLeader(); return leader; };
+export const amLeader = () => leader; // 確認だけ（保存領域を読まない。画面の表示用）
 if (typeof window !== 'undefined') {
   setInterval(checkLeader, 4000);
   document.addEventListener('visibilitychange', checkLeader);
@@ -326,7 +349,8 @@ let active = 0, lastStart = 0;
 const starts = [];
 const queue = [];
 let hold = 0; // 回数制限を受けたら全体を一時停止する時刻
-export function pauseAll(ms) { hold = Math.max(hold, Date.now() + ms); }
+export function pauseAll(ms) { hold = Math.max(hold, Date.now() + ms); saveCool(); }
+loadCool();
 
 function schedule(prio, fn) {
   return new Promise((resolve, reject) => {
@@ -658,11 +682,13 @@ function refreshBase(code, prio) {
     let full = !base || !base.bars?.length || fullDue(code, base, now) || now - lastT > 25 * 86400e3;
     // 定期の取り直しだけが理由なら、今日の取り込み枠が無いときは継ぎ足しで済ませる（取り直しは翌日以降）
     if (full && base?.bars?.length && base.fullAt && now - lastT <= 25 * 86400e3 && !initAvailable()) full = false;
+    // 近似した始値の補正（約1か月ごと。補正が遅れて3か月近くたったときは3か月分）
+    const fix = !full && fixDue(code, base, now) && initAvailable();
     // 継ぎ足しは通常「直近5日分」だけ（約1KB）。4日以上空いたときは1か月分
-    const range = full ? '10y' : now - lastT < 4 * 86400e3 ? '5d' : '1mo';
+    const range = full ? '10y' : fix ? (now - base.approxSince < 28 * 86400e3 ? '1mo' : '3mo') : now - lastT < 4 * 86400e3 ? '5d' : '1mo';
     const why = !base?.bars?.length ? '日足10年分（初回）' : base.fullAt === 0 ? '日足10年分（分割・併合の反映）' : '日足10年分（定期の取り直し）';
     let parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=${range}&includeAdjustedClose=false`,
-      { code, prio, initial: full, what: full ? why : `日足の更新（直近${range === '5d' ? '5日' : '1か月'}）` }));
+      { code, prio, initial: full || fix, what: full ? why : fix ? '日足の補正（近似した始値を正確な値に）' : `日足の更新（直近${range === '5d' ? '5日' : '1か月'}）` }));
     // 継ぎ足し分に含まれる確定済みの過去の終値が、保存済みと食い違えば分割・併合 → 10年分を取り直す
     if (!full && splitDetected(base.bars, parsed.bars.slice(0, -1).map((b) => [b[0], b[4]])) && takeSplitRefetch(code)) {
       full = true;
@@ -673,20 +699,30 @@ function refreshBase(code, prio) {
     // 値が前回と同じ（取引が無かった等）なら、保存済みのデータは書き換えず取得時刻だけ更新する
     const lastOld = base?.bars?.[base.bars.length - 1];
     const lastNew = daily[daily.length - 1];
-    if (!full && lastOld && lastNew && base.bars.length && lastOld.join() === lastNew.join() && base.meta?.price === parsed.meta.price) {
+    // （補正のときは過去の足を直すので、最新の値が同じでも保存する）
+    if (!full && !fix && lastOld && lastNew && base.bars.length && lastOld.join() === lastNew.join() && base.meta?.price === parsed.meta.price) {
       const same = { ...base, fetchedAt: now, unchanged: true };
       mem.set(keyOf(code, 'base'), same);
       return same;
     }
-    const v = { ...packBase(daily, base, full), meta: parsed.meta, fetchedAt: now, fullAt: full ? now : base.fullAt };
+    const v = { ...packBase(daily, base, full), meta: parsed.meta, fetchedAt: now, fullAt: full ? now : base.fullAt,
+      approxSince: full || fix ? null : base?.approxSince ?? null };
     await putStored(code, 'base', v);
     return v;
   }));
 }
 
+// 5分足を取った回数（日本時間0時区切り。タブをまたいで数える）
+const I5_KEY = 'tm.i5.v1';
+function i5Today() {
+  const d = dayKey(Date.now());
+  try { const v = JSON.parse(localStorage.getItem(I5_KEY)); if (v && v.d === d) return v; } catch { /* ignore */ }
+  return { d, n: 0 };
+}
 function refreshIntraday(code, prio) {
   return once(keyOf(code, '5m'), () => schedule(prio, async () => {
     const now = Date.now();
+    if (!cfg.demo) { const c = i5Today(); c.n++; try { localStorage.setItem(I5_KEY, JSON.stringify(c)); } catch { /* ignore */ } }
     const bars = cfg.demo ? demoIntraday(code)
       : parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=5m&range=5d`, { code, prio, what: '5分足' })).bars;
     const v = { bars, meta: {}, fetchedAt: now };
@@ -770,6 +806,15 @@ function fullDue(code, b, now = Date.now()) {
   return now - b.fullAt > (cfg.fullDays + (h % 60)) * 86400e3;
 }
 const needsFull = (b, code) => !b?.bars?.length || fullDue(code, b);
+/* 近似した始値の補正：表示対象が多いと当日の始値は近似になる（approxSince に最初に近似した時刻を記録）。
+   近似してから約1か月たったら、直近1か月分の日足（1回約2.4KB）を取り、正確な始値に置き換える。
+   10年分の取り込みと同じ別枠で数え、枠が無い日は翌日以降に回す。 */
+function fixDue(code, b, now = Date.now()) {
+  if (!b?.approxSince) return false;
+  let h = 0;
+  for (const ch of code) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return now - b.approxSince > (cfg.fixDays + (h % 5)) * 86400e3;
+}
 
 function mergeSpark(base, x, approxOpen, code) {
   const ts = x.timestamp;
@@ -788,8 +833,9 @@ function mergeSpark(base, x, approxOpen, code) {
   const price = m.regularMarketPrice ?? closes[closes.length - 1];
   if (price == null) return { need: 'gap' };
   let open;
+  let approx = false;
   if (lastDay === today) open = last[1];
-  else if (approxOpen) open = cfg.openMode === 'prev' ? last[4] : openCache.get(`${x.meta.symbol}|${today}`);
+  else if (approxOpen) { open = cfg.openMode === 'prev' ? last[4] : openCache.get(`${x.meta.symbol}|${today}`); approx = true; }
   if (open == null) return { need: 'open' };
   const high = Math.max(m.regularMarketDayHigh ?? price, open, price);
   const low = Math.min(m.regularMarketDayLow ?? price, open, price);
@@ -801,7 +847,7 @@ function mergeSpark(base, x, approxOpen, code) {
     prevBars = bars.slice(0, -1).concat([[last[0], last[1], Math.max(last[2], c), Math.min(last[3], c), c, last[5]]]);
   }
   const daily = lastDay === today ? bars.slice(0, -1).concat([bar]) : prevBars.concat([bar]);
-  return { daily, meta: { ...base.meta, price, time: m.regularMarketTime ?? base.meta?.time } };
+  return { daily, approx, meta: { ...base.meta, price, time: m.regularMarketTime ?? base.meta?.time } };
 }
 
 // 近似の始値：当日の1分足の最初の値（まとめて1回）
@@ -872,7 +918,8 @@ async function saveMerged(code, base, m, now) {
     mem.set(keyOf(code, 'base'), { ...base, fetchedAt: now, unchanged: true });
     return;
   }
-  await putStored(code, 'base', { ...packBase(m.daily, base, false), meta: m.meta, fetchedAt: now, fullAt: base.fullAt });
+  await putStored(code, 'base', { ...packBase(m.daily, base, false), meta: m.meta, fetchedAt: now, fullAt: base.fullAt,
+    approxSince: base.approxSince || (m.approx ? now : null) });
 }
 
 // code の更新を、この先表示される銘柄と一緒にまとめて行う（最大20銘柄）
@@ -912,6 +959,8 @@ async function refreshViaBatch(code, prio) {
 const NODATA_KEY = 'tm.nodata.v1';
 function noDataMap() { try { return JSON.parse(localStorage.getItem(NODATA_KEY)) || {}; } catch { return {}; } }
 export function noDataToday(code) { return noDataMap()[code] === dayKey(Date.now()); }
+// 今日「データなし」の銘柄をまとめて（一覧を描くときに1回だけ読む）
+export function noDataSet() { const today = dayKey(Date.now()); return new Set(Object.entries(noDataMap()).filter(([, d]) => d === today).map(([c]) => c)); }
 function setNoData(code, on) {
   const m = noDataMap();
   const today = dayKey(Date.now());
@@ -940,11 +989,13 @@ export async function loadSet(code, tfs, { force = false, onEntry = null, prio =
     const cur = await getStored(code, kind);
     const fresh = maxAgeMs != null && dataLive(Date.now(), market)
       ? cur && Date.now() - cur.fetchedAt < maxAgeMs
-      : cur && isFresh(cur.fetchedAt, kind === '5m' ? Math.max(cfg.ttlMs, 5 * 60e3) : cfg.ttlMs, Date.now(), market);
+      : cur && isFresh(cur.fetchedAt, kind === '5m' ? Math.max(cfg.ttl5Ms, 5 * 60e3) : cfg.ttlMs, Date.now(), market);
     if (!force && fresh) continue;
+    // 5分足は1日の上限を超えたら取りに行かない（保存済みの5分足があればそれで表示）
+    if (kind === '5m' && !force && !cfg.demo && i5Today().n >= cfg.cap5) continue;
     try {
       let v;
-      if (kind === 'base' && cur?.bars?.length && !force && !cfg.demo && !fullDue(code, cur)) {
+      if (kind === 'base' && cur?.bars?.length && !force && !cfg.demo && !fullDue(code, cur) && !(fixDue(code, cur) && initAvailable())) {
         // まとめて取得で更新。できなかった場合（当日の始値が無い・過去の足が抜けている）だけ個別に取得
         let left = true;
         try { left = await refreshViaBatch(code, prio); } catch (e) { if (e.budget || e.quiet) throw e; }

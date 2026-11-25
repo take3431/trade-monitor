@@ -4,7 +4,7 @@
 
 /* 主要な指数・為替・商品（Yahoo のシンボルをそのまま銘柄コードとして使う）
    コード: [日本語名, 検索用の別名（空白区切り）, 取引時間の区分, Yahoo!ファイナンス（日本）のページのコード]
-   取引時間の区分：JP＝東証と同じ ／ US＝米国市場と同じ ／ X＝その他（海外市場・為替・暗号資産。時間で止めない） */
+   取引時間の区分：JP＝東証と同じ ／ US＝米国市場と同じ ／ X＝海外市場・為替・商品（土日は休み） ／ C＝暗号資産（24時間・土日も） */
 export const INDICES = {
   '^N225': ['日経平均株価', '日経平均 日経225 ニッケイヘイキン Nikkei225 N225', 'JP', '998407.O'],
   '^N500': ['日経500種平均株価', '日経500 Nikkei500', 'JP', '^N500'],
@@ -26,14 +26,14 @@ export const INDICES = {
   '^STOXX50E': ['ユーロ・ストックス50', 'ユーロストックス EuroStoxx50 欧州', 'X', '^STOXX50E'],
   'USDJPY=X': ['米ドル/円', 'ドル円 ドル 為替 USDJPY', 'X', 'USDJPY=FX'],
   'EURJPY=X': ['ユーロ/円', 'ユーロ円 ユーロ 為替 EURJPY', 'X', 'EURJPY=FX'],
-  'BTC-USD': ['ビットコイン（米ドル建て）', 'ビットコイン BTC 仮想通貨 暗号資産 Bitcoin', 'X', 'BTC-USD'],
+  'BTC-USD': ['ビットコイン（米ドル建て）', 'ビットコイン BTC 仮想通貨 暗号資産 Bitcoin', 'C', 'BTC-USD'],
   'GC=F': ['金先物（NY金）', '金 ゴールド 金価格 Gold', 'X', 'GC=F'],
   'CL=F': ['WTI原油先物', '原油 WTI 石油 CrudeOil', 'X', 'CL=F'],
 };
 export const isIndex = (code) => Object.prototype.hasOwnProperty.call(INDICES, code);
 // 市場の区分（米国株は英字で始まる。指数・為替などは除く）
 export const isUS = (code) => /^[A-Z]/.test(code) && !isIndex(code);
-// 取引時間の判定に使う市場：JP（東証）／ US（米国）／ X（時間で止めない）
+// 取引時間の判定に使う市場：JP（東証）／ US（米国）／ X（海外・為替・商品）／ C（暗号資産）
 export const marketOfCode = (code) => (isIndex(code) ? INDICES[code][2] : isUS(code) ? 'US' : 'JP');
 // Yahoo に問い合わせるときのシンボル（日本株は .T を付ける）
 export const yahooSymbol = (code) => (isIndex(code) || isUS(code) ? code : `${code}.T`);
@@ -42,7 +42,7 @@ export const yahooJpUrl = (code) => `https://finance.yahoo.co.jp/quote/${encodeU
 export const JP_RE = /^[0-9][0-9A-Z]{3}$/;
 export const US_RE = /^[A-Z][A-Z0-9]{0,5}(-[A-Z])?$/;
 
-import { US, US_TOP } from './us-names.js?v=20261125164254';
+import { US, US_TOP } from './us-names.js?v=20261125170634';
 
 export const US_NAMES = Object.fromEntries(Object.entries(US).map(([k, v]) => [k, v[0]]));
 
@@ -91,7 +91,7 @@ function buildIndex() {
 export function loadDict() {
   if (jp) return Promise.resolve(jp);
   if (!jpLoading) {
-    jpLoading = fetch('data/jp-stocks.json?v=20261125164254')
+    jpLoading = fetch('data/jp-stocks.json?v=20261125170634')
       .then((r) => r.json())
       .then((j) => { jp = j.list; buildIndex(); return jp; })
       .catch(() => { jpLoading = null; return {}; });

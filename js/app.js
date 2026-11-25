@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261125164254';
-import * as D from './data.js?v=20261125164254';
-import { Stage, themeColors } from './chart.js?v=20261125164254';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125164254';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125164254';
+import * as M from './market.js?v=20261125170634';
+import * as D from './data.js?v=20261125170634';
+import { Stage, themeColors } from './chart.js?v=20261125170634';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125170634';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125170634';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -120,21 +120,29 @@ const EXACT_OPEN_MAX = 50; // 1銘柄ずつ始値を取ると、それだけで1
 const DATA_TARGET_KB = 3500; // 始値の取り方を選ぶときの目標（200銘柄までは4,000KB）
 const DATA_LIMIT_KB = 4000;  // これを超えるときだけ、取引時間中の更新間隔を延ばす
 const LIVE_MIN = 330; // 東証のデータが動く時間（9:20〜11:50・12:50〜15:50）
-const TIERS = [ // [銘柄数まで, 更新間隔（分）, 始値の取り方の候補（良い順）, 定期の取り直し（日）]
-  [50, 2, ['exact'], 150],
-  [200, 2, ['1m', '5m', '15m', 'prev'], 150],
-  [400, 3, ['5m', '15m', 'prev'], 300],
-  [700, 4, ['15m', 'prev'], 300],
-  [Infinity, 5, ['15m', 'prev'], 300],
+const TIERS = [ // [銘柄数まで, 更新間隔（分）, 始値の取り方の候補（良い順）]
+  [50, 2, ['exact']],
+  [200, 2, ['1m', '5m', '15m', 'prev']],
+  [400, 3, ['5m', '15m', 'prev']],
+  [700, 4, ['15m', 'prev']],
+  [Infinity, 5, ['15m', 'prev']],
 ];
 const OPEN_KB = { exact: 2.4, '1m': 6.6, '5m': 2.4, '15m': 1.7, prev: 0 };
-function dataPlan(n = enabledCount(), interval = settings.interval) {
-  const [, tierMin, modes, fullDays] = TIERS.find(([max]) => n <= max);
+const FULL_DAYS = 730;   // 10年分の定期の取り直し（約2年ごと。始値の補正は約1か月ごとに別に行う）
+const INTRADAY_KB = 20.3; // 5分足（5日分）1回
+const REQ_LIMIT = 260;    // 1日300回の上限に、検索・再試行の分の余裕を残す
+const uses5m = () => settings.leftTf === '5m' || settings.rightTf === '5m';
+function dataPlan(n = enabledCount(), interval = settings.interval, use5m = uses5m()) {
+  const [, tierMin, modes] = TIERS.find(([max]) => n <= max);
   const displays = (LIVE_MIN * 60) / interval;        // 取引時間中に表示する回数
   const shown = Math.min(n, displays);                // 取引時間中に1回以上表示する銘柄の数
-  const fixed = (mode) => (mode === 'exact' ? n * OPEN_KB.exact : shown * OPEN_KB[mode] + (shown / 20) * 1.4)
-    + n * 1.3 + (n / fullDays) * 158;                // 始値＋引け後の更新＋定期の取り直し
-  const liveKB = (ttl) => { const r = Math.min(displays, (n * LIVE_MIN) / ttl); return r * 1.23 + Math.max(LIVE_MIN / ttl, r / 20) * 1.4; };
+  const upkeep = n * 1.3 + (n / FULL_DAYS) * 158 + (n / 27) * 3.8; // 引け後の更新＋定期の取り直し＋始値の補正
+  const openKB = (mode) => (mode === 'exact' ? n * OPEN_KB.exact : shown * OPEN_KB[mode] + (shown / 20) * 1.4);
+  const openReq = (mode) => (mode === 'exact' ? n : mode === 'prev' ? 0 : shown / 20);
+  const liveR = (ttl) => Math.min(displays, (n * LIVE_MIN) / ttl);
+  const liveReq = (ttl) => Math.max(LIVE_MIN / ttl, liveR(ttl) / 20);
+  const liveKB = (ttl) => liveR(ttl) * 1.23 + liveReq(ttl) * 1.4;
+  const kb = (mode, ttl) => openKB(mode) + upkeep + liveKB(ttl);
   // 始値はなるべく良い取り方で。目標に収まらなければ粗くし、上限も超えるときだけ更新間隔を延ばす
   const target = n <= 200 ? DATA_LIMIT_KB : DATA_TARGET_KB;
   // 切り替えが20秒より速いときは、同じ銘柄を表示するたびには更新しない（k回の表示に1回。5秒なら4回に1回）。
@@ -142,14 +150,22 @@ function dataPlan(n = enabledCount(), interval = settings.interval) {
   const skip = interval < 20 ? Math.ceil(20 / interval) : 1;
   const baseTtl = Math.max(tierMin, skip > 1 ? ((skip - 0.5) * n * interval) / 60 : 0);
   let mode = modes[modes.length - 1];
-  for (const m of modes) if (fixed(m) + liveKB(baseTtl) <= target) { mode = m; break; }
+  for (const m of modes) if (kb(m, baseTtl) <= target) { mode = m; break; }
   let ttl = baseTtl;
-  while (fixed(mode) + liveKB(ttl) > DATA_LIMIT_KB && ttl < LIVE_MIN) ttl = Math.ceil(ttl * 1.25);
-  return { ttlMin: ttl, skip, openMode: mode, fullDays, estKB: Math.round(fixed(mode) + liveKB(ttl)) };
+  while (kb(mode, ttl) > DATA_LIMIT_KB && ttl < LIVE_MIN) ttl = Math.ceil(ttl * 1.25);
+  // 5分足はまとめて取れない（1銘柄ずつ約20KB）。使うときは、通信量の上限と1日の回数の上限に収まるまで更新間隔を延ばす
+  let ttl5 = Math.max(5, ttl);
+  const r5 = (t) => (use5m ? Math.min(displays, (n * LIVE_MIN) / t) : 0);
+  const reqs = openReq(mode) + liveReq(ttl) + n / 20;
+  while (use5m && (kb(mode, ttl) + r5(ttl5) * INTRADAY_KB > DATA_LIMIT_KB || reqs + r5(ttl5) > REQ_LIMIT) && ttl5 < LIVE_MIN) ttl5 = Math.ceil(ttl5 * 1.25);
+  // それでも収まらない（銘柄が多い）ときは、5分足を取る回数に1日の上限を設ける（超えたら保存済みの5分足で表示）
+  const cap5 = use5m ? Math.max(0, Math.floor(Math.min((DATA_LIMIT_KB - kb(mode, ttl)) / INTRADAY_KB, REQ_LIMIT - reqs))) : 0;
+  const n5 = Math.min(r5(ttl5), cap5);
+  return { ttlMin: ttl, ttl5Min: ttl5, cap5, use5m, skip, openMode: mode, fullDays: FULL_DAYS, estKB: Math.round(kb(mode, ttl) + n5 * INTRADAY_KB) };
 }
 let planCache = null;
 function currentPlan() {
-  const key = `${enabledCount()}|${settings.interval}`;
+  const key = `${enabledCount()}|${settings.interval}|${uses5m()}`;
   if (!planCache || planCache.key !== key) planCache = { key, plan: dataPlan() };
   return planCache.plan;
 }
@@ -163,6 +179,8 @@ function applyData() {
     approxOpen: plan.openMode !== 'exact',
     openMode: plan.openMode,
     fullDays: plan.fullDays,
+    ttl5Ms: plan.ttl5Min * 60e3,
+    cap5: plan.cap5,
     // 取引時間中にまとめて取得する範囲：2分（データの有効時間）以内に表示する銘柄の数＋1
     liveAhead: Math.min(20, Math.ceil((plan.ttlMin * 60) / settings.interval) + 1),
     // まとめて取得の対象：この先表示される20銘柄（表示中の銘柄を含む）
@@ -174,7 +192,8 @@ function renderPlan(plan) {
   const n = enabledCount();
   const set = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
   const t = plan.ttlMin < 10 ? Math.round(plan.ttlMin * 10) / 10 : Math.round(plan.ttlMin);
-  set('specLive', `取引時間中、同じ銘柄は${t}分ごとに最新化（表示対象${n}銘柄・切り替え${settings.interval}秒に合わせて自動で調整${plan.skip > 1 ? `。切り替えが速いので、毎回の表示では更新しない` : ''}）`);
+  const t5 = plan.ttl5Min < 10 ? Math.round(plan.ttl5Min * 10) / 10 : Math.round(plan.ttl5Min);
+  set('specLive', `取引時間中、同じ銘柄は${t}分ごとに最新化（表示対象${n}銘柄・切り替え${settings.interval}秒に合わせて自動で調整${plan.skip > 1 ? `。切り替えが速いので、毎回の表示では更新しない` : ''}）${plan.use5m ? `。5分足は1銘柄ずつの通信になるため約${t5}分ごと（1日${plan.cap5}回まで。超えたら保存済みの5分足で表示）` : ''}`);
   set('specOpen', OPEN_LABEL[plan.openMode]);
   set('specEst', `約${(plan.estKB / 1000).toFixed(1)}MB（東証・取引日に1日中表示した場合の目安。目標3.5MB・上限4MB）`);
 }
@@ -296,6 +315,9 @@ async function present(item, entries, seq, loading = false) {
 function go(delta, nav = true, auto = false) {
   const code = neighbor(delta);
   st.remaining = settings.interval;
+  // 先読みのタイミングに0〜3秒のばらつきを入れる（毎回同じリズムの機械的な通信にしない）
+  const baseLead = Math.min(PREFETCH_SEC, settings.interval - 2);
+  st.lead = Math.max(1, baseLead - Math.floor(Math.random() * Math.min(4, baseLead)));
   if (!code) { showEmpty(true); renderCountdown(); return; }
   show(code, { nav, auto });
   renderCountdown();
@@ -330,7 +352,7 @@ function tick() {
   warmTick(now);
   if (!pauseReason(now) && enabledCount() > 0) {
     st.remaining--;
-    const lead = Math.min(PREFETCH_SEC, settings.interval - 2);
+    const lead = st.lead ?? Math.min(PREFETCH_SEC, settings.interval - 2);
     if (st.remaining === lead) prefetch(neighbor(1));
     if (st.remaining <= 0) go(1, false, true);
   }
@@ -342,10 +364,11 @@ function tick() {
    すでにデータのある銘柄の最新化は、表示の30秒前の事前取得（まとめて取得）に任せる。 */
 const WARM_EVERY_MS = 15000; // 裏での取り込みは15秒に1件（一度にたくさん通信しない）
 const WARM_MAX_AGE = 10 * 60e3;
-let warmAt = 0, warmBusy = false;
+let warmAt = 0, warmBusy = false, warmJitter = 0;
 const haveData = new Set(); // データ取得済みと確認できた銘柄（毎回の確認を省くため）
 async function warmTick(now) {
-  if (warmBusy || st.settingsOpen || document.hidden || now - warmAt < WARM_EVERY_MS || !D.isIdle()) return;
+  if (warmBusy || st.settingsOpen || document.hidden || now - warmAt < WARM_EVERY_MS + warmJitter || !D.isIdle()) return;
+  warmJitter = Math.floor(Math.random() * 3000); // 裏の取り込みの間隔にも0〜3秒のばらつき
   if (!D.initAvailable()) return; // 今日の取り込み枠を使い切ったら、裏での取り込みは翌日に
   if (D.cooling() || !D.isLeader()) return; // 通信を控えている間・別のタブが通信役のときは取りに行かない
   warmAt = now;
@@ -384,13 +407,13 @@ function updateStatus(now = Date.now()) {
   const dot = $('statusDot');
   const err = st.lastError;
   dot.className = `dot ${err ? 'err' : ph.open ? 'ok' : 'closed'}${loading ? ' busy' : ''}`;
-  $('statusText').textContent = `${m === 'US' ? '米国' : m === 'X' ? '海外・為替' : '東証'}・${ph.open ? `接続中（${ph.label}）` : ph.label}`;
+  $('statusText').textContent = `${m === 'US' ? '米国' : m === 'X' ? '海外・為替' : m === 'C' ? '暗号資産' : '東証'}・${ph.open ? `接続中（${ph.label}）` : ph.label}`;
   const e = stages[front].entries?.[settings.leftTf] || stages[front].entries?.[settings.rightTf];
   const ns = D.netStats();
   const b = D.budgetStatus();
   const mb = $('modeBadge');
   const cool = D.cooling();
-  const follower = !D.isLeader();
+  const follower = !D.amLeader();
   mb.hidden = !(b.over || cool || follower || approxMode());
   mb.textContent = b.over ? '本日の通信上限' : cool ? '通信を控えています' : follower ? '別のタブで通信中' : '始値は近似';
   mb.title = b.over ? `今日の通信が${b.cap}回に達したため、保存済みのデータで表示しています（明日0時に再開）`
@@ -549,10 +572,11 @@ function updateDirty() {
 /* ---------------- 銘柄一覧 ---------------- */
 function renderList() {
   $('listCount').textContent = `(${list.length}/${MAX_SYMBOLS})`;
+  const noData = D.noDataSet();
   $('listBody').innerHTML = list.map((x, i) => `
     <tr data-code="${esc(x.code)}">
       <td class="c-no"><span class="grip" title="ドラッグで並び替え"><svg class="ico"><use href="#i-grip"/></svg></span><span class="no">${String(i + 1).padStart(3, '0')}</span></td>
-      <td class="c-code num">${esc(x.code)}${isIndex(x.code) ? '<span class="tag idx">指数</span>' : isUS(x.code) ? '<span class="tag">米</span>' : ''}${D.noDataToday(x.code) ? '<span class="tag nd" title="Yahoo にこの銘柄のデータがありません（上場廃止・コード違いの可能性）。今日は取りに行きません">データなし</span>' : ''}</td>
+      <td class="c-code num">${esc(x.code)}${isIndex(x.code) ? '<span class="tag idx">指数</span>' : isUS(x.code) ? '<span class="tag">米</span>' : ''}${noData.has(x.code) ? '<span class="tag nd" title="Yahoo にこの銘柄のデータがありません（上場廃止・コード違いの可能性）。今日は取りに行きません">データなし</span>' : ''}</td>
       <td class="c-name"><button class="link rename">${esc(x.name || '（名称未設定）')}</button></td>
       <td class="c-price r"></td>
       <td class="c-target"><div class="tgt-box"><input class="tgt" type="text" autocomplete="off" enterkeyhint="done" placeholder="株価を入力" aria-label="${esc(x.code)} の設定株価"><span class="tgt-dir"></span></div></td>
@@ -625,6 +649,12 @@ const quotes = load(QUOTE_KEY, null) || {};
   }
 }
 const priceOf = (code) => quotes[code]?.price ?? null;
+window.addEventListener('storage', (e) => {
+  if (e.key !== QUOTE_KEY || !e.newValue || D.amLeader()) return;
+  try { Object.assign(quotes, JSON.parse(e.newValue)); } catch { return; }
+  if (overviewMode) scheduleOverview();
+  if (st.settingsOpen && alertMode) list.forEach((x) => updateAlertRow(x.code));
+});
 let saveQuotesTimer = null;
 function saveQuotes() {
   clearTimeout(saveQuotesTimer);
@@ -1014,7 +1044,8 @@ function doSearch() {
   const ascii = /^[\x20-\x7E]+$/.test(q);
   showResults(results, results.length ? '候補をタップしてください' : (ascii ? '検索中…' : '見つかりませんでした'));
   // Yahoo 検索は通信が必要なので、英字の入力が止まってから1回だけ
-  if (ascii && q.length >= 2 && results.length < 8) {
+  // Yahoo 検索は英字3文字以上・入力が1秒止まってから・手元の辞書で3件未満しか見つからないときだけ（通信を減らす）
+  if (ascii && q.length >= 3 && results.length < 3) {
     remoteTimer = setTimeout(async () => {
       try {
         const remote = await D.searchRemote(q);
@@ -1024,7 +1055,7 @@ function doSearch() {
       } catch {
         if (seq === searchSeq && !results.length) $('addMsg').textContent = '見つかりませんでした';
       }
-    }, 700);
+    }, 1000);
   }
 }
 $('btnSearch').addEventListener('click', doSearch);
