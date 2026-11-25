@@ -266,7 +266,6 @@ function updateStatus(now = Date.now()) {
   $('statusText').textContent = `${m === 'US' ? '米国' : '東証'}・${ph.open ? `接続中（${ph.label}）` : ph.label}`;
   const e = stages[front].entries?.[settings.leftTf] || stages[front].entries?.[settings.rightTf];
   const ns = D.netStats();
-  $('updatedAt').textContent = ns.active ? '通信中…' : ns.lastAt ? `最終通信 ${M.fmtStamp(ns.lastAt, now)}` : '';
   const errEl = $('errText');
   errEl.hidden = !err;
   if (err) {
