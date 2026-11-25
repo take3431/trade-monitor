@@ -153,6 +153,28 @@
   </form>
 </dialog>
 
+<dialog id="netDialog" class="net-dialog">
+  <div class="net-head">
+    <h3>通信状況</h3>
+    <button type="button" class="icon-btn" id="btnNetClose" aria-label="閉じる"><svg class="ico"><use href="#i-close"/></svg></button>
+  </div>
+  <div class="net-summary" id="netSummary"></div>
+  <div class="net-now" id="netNow"></div>
+  <h4>最近の通信（新しい順）</h4>
+  <div class="net-log-wrap"><table class="net-log"><thead><tr><th>時刻</th><th>銘柄</th><th>内容</th><th>結果</th></tr></thead><tbody id="netLogBody"></tbody></table></div>
+  <details class="net-rules">
+    <summary>データを取得するタイミング</summary>
+    <ul>
+      <li><b>表示するとき</b>：保存済みのデータをすぐ表示します。場中で最後の取得から2分以上たっていれば、裏で最新のデータを取りに行きます。</li>
+      <li><b>次の銘柄</b>：切り替わる30秒前（間隔が短い場合は切替直後）に1回だけ取得しておきます。</li>
+      <li><b>まだデータの無い銘柄</b>：8秒に1件ずつ、順番に取得します（初回だけ日足10年分、以降は直近5日分）。</li>
+      <li><b>閉場中</b>：引け後のデータを取得済みなら通信しません。</li>
+      <li><b>上限</b>：1分に12回まで・同時に2本まで。回数制限の応答が来たら全体を一時停止します。</li>
+      <li>データの取得先：Yahoo Finance（中継：r.jina.ai）。東証は約20分遅れです。</li>
+    </ul>
+  </details>
+</dialog>
+
 <div id="toast" class="toast" hidden></div>
 </body>
 </html>

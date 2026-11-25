@@ -270,3 +270,28 @@ tr.drag-placeholder td > * { visibility: hidden; }
 .q-price { font-size: 1.6rem; font-weight: 700; }
 .q-chg { font-size: 1.15rem; font-weight: 600; }
 .sym-title { flex-wrap: wrap; row-gap: .1rem; }
+
+/* ===== 通信状況 ===== */
+.status { cursor: pointer; border-radius: 8px; padding: .25rem .5rem; margin-left: -.5rem; }
+.status:active { background: var(--surface2); }
+#updatedAt { text-decoration: underline dotted; text-underline-offset: 3px; }
+.sym-fetch { font-size: .75rem; }
+.net-dialog { width: min(46rem, 94vw); max-height: 88vh; display: none; flex-direction: column; gap: .6rem; overflow: hidden; }
+.net-dialog[open] { display: flex; }
+.net-head { display: flex; align-items: center; justify-content: space-between; }
+.net-head h3 { margin: 0; }
+.net-dialog h4 { margin: .2rem 0 0; font-size: .9rem; }
+.net-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: .5rem; }
+.net-summary > div { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: .45rem .6rem; display: flex; flex-direction: column; }
+.net-summary .k { font-size: .72rem; color: var(--muted); }
+.net-summary b { font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+.net-summary .u { font-size: .72rem; color: var(--muted); }
+.net-now { font-size: .82rem; line-height: 1.6; background: var(--surface2); border-radius: 8px; padding: .5rem .7rem; }
+.net-log-wrap { flex: 1; min-height: 6rem; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.net-log { width: 100%; border-collapse: collapse; font-size: .8rem; }
+.net-log th { position: sticky; top: 0; background: var(--surface2); text-align: left; padding: .35rem .5rem; font-weight: 600; }
+.net-log td { padding: .35rem .5rem; border-top: 1px solid var(--border); vertical-align: top; }
+.net-log tr.ng td { background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.net-rules { font-size: .8rem; color: var(--muted); }
+.net-rules summary { cursor: pointer; color: var(--text); }
+.net-rules ul { margin: .4rem 0 0; padding-left: 1.2rem; line-height: 1.6; }

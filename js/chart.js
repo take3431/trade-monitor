@@ -200,7 +200,7 @@ const STAGE_HTML = `
       <div class="sym-title"><span class="sym-code"></span><span class="sym-name"></span>
         <span class="sym-quote"><span class="q-price"></span><span class="q-chg"></span></span></div>
     </div>
-    <div class="sym-meta"><div class="sym-pos"></div><div class="sym-time"></div></div>
+    <div class="sym-meta"><div class="sym-pos"></div><div class="sym-time"></div><div class="sym-fetch"></div></div>
   </section>
   <section class="charts">
     ${['L', 'R'].map((s) => `
@@ -218,7 +218,7 @@ export class Stage {
     const $ = (s) => root.querySelector(s);
     this.el = {
       code: $('.sym-code'), name: $('.sym-name'), pos: $('.sym-pos'),
-      time: $('.sym-time'), qPrice: $('.q-price'), qChg: $('.q-chg'), quote: $('.sym-quote'),
+      time: $('.sym-time'), fetch: $('.sym-fetch'), qPrice: $('.q-price'), qChg: $('.q-chg'), quote: $('.sym-quote'),
     };
     this.panes = [...root.querySelectorAll('.chart-card')].map((c) => new Pane(c));
     this.code = null;
@@ -256,7 +256,8 @@ export class Stage {
     const last = entries[settings.leftTf] || entries[settings.rightTf];
     const us = /^[A-Z]/.test(item.code);
     const asOf = last?.meta?.time ? last.meta.time * 1000 : last?.fetchedAt ? last.fetchedAt - (us ? 0 : 20 * 60e3) : 0;
-    e.time.textContent = asOf ? `${fmtStamp(asOf)} 時点${us ? '（日本時間）' : ''}` : '';
+    e.time.textContent = asOf ? `${fmtStamp(asOf)} 時点のデータ${us ? '（日本時間）' : ''}` : '';
+    e.fetch.textContent = last?.fetchedAt ? `${fmtStamp(last.fetchedAt)} に取得` : (loading ? '取得中…' : '');
     this.panes.forEach((p) => { p.exch = us ? 'US' : 'TSE'; });
     const label = `${item.code} ${item.name || ''}`.trim();
     this.panes[0].setData(entries[settings.leftTf], settings.leftTf, label, settings.leftBars, keepRange, loading);

@@ -98,7 +98,39 @@ const HEDGE_MS = 4000;
 let hostFlip = 0;
 
 // 1件の Yahoo API 呼び出しを、経路を切り替えながら成功するまで試みる
-function fetchYahoo(path) {
+/* ======================= 通信の記録（画面の「通信状況」で表示） ======================= */
+const LOG_MAX = 80;
+const netLogList = [];
+const netListeners = new Set();
+const NET_DAY_KEY = 'tm.netcount.v1';
+let netDay = { d: '', n: 0 };
+try { netDay = JSON.parse(localStorage.getItem(NET_DAY_KEY)) || netDay; } catch { /* ignore */ }
+let lastNetAt = 0;
+export const onNetLog = (fn) => netListeners.add(fn);
+export const netLog = () => netLogList;
+function record(ev) {
+  const today = dayKey(Date.now());
+  if (netDay.d !== today) netDay = { d: today, n: 0 };
+  netDay.n++;
+  try { localStorage.setItem(NET_DAY_KEY, JSON.stringify(netDay)); } catch { /* ignore */ }
+  lastNetAt = ev.t;
+  netLogList.unshift(ev);
+  if (netLogList.length > LOG_MAX) netLogList.pop();
+  netListeners.forEach((f) => { try { f(ev); } catch { /* ignore */ } });
+}
+export function netStats() {
+  const now = Date.now();
+  const today = dayKey(now);
+  return {
+    lastMin: starts.filter((t) => now - t < 60e3).length,
+    perMin: PER_MIN,
+    today: netDay.d === today ? netDay.n : 0,
+    active, queued: queue.length, lastAt: lastNetAt,
+    pausedUntil: hold > now ? hold : 0,
+  };
+}
+
+function fetchYahoo(path, ctx = {}) {
   const order = routeOrder();
   return new Promise((resolve, reject) => {
     let idx = 0, pending = 0, done = false;
@@ -115,20 +147,26 @@ function fetchYahoo(path) {
       pending++;
       (async () => {
         let status = 0;
+        const t0 = Date.now();
+        const ev = { t: t0, code: ctx.code || '', what: ctx.what || '', route: r.label, ok: false, ms: 0, note: '' };
         try {
           const res = await fetch(r.build(url), { signal: ctrl.signal, cache: 'no-store' });
           status = res.status;
           if (!res.ok) throw new Error(status === 401 || status === 403 ? '拒否' : status === 429 ? '回数制限' : `HTTP ${status}`);
           const json = r.parse(await res.text());
           if (!json || !json.chart) throw new Error('応答形式不正');
-          if (done) return;
+          ev.ok = true; ev.ms = Date.now() - t0;
+          if (done) { ev.note = '別経路が先に応答'; record(ev); return; }
+          record(ev);
           routeOk(r);
           finish();
           resolve(json);
         } catch (e) {
+          const why = e.name === 'AbortError' ? (done ? '中止（別経路が応答）' : 'タイムアウト') : e instanceof SyntaxError ? '応答形式不正' : e.name === 'TypeError' ? '接続不可' : e.message;
+          ev.ms = Date.now() - t0; ev.note = why;
+          record(ev);
           if (done) return;
           routeFail(r, status);
-          const why = e.name === 'AbortError' ? 'タイムアウト' : e instanceof SyntaxError ? '応答形式不正' : e.name === 'TypeError' ? '接続不可' : e.message;
           errs.push(`${r.label}: ${why}`);
         } finally {
           clearTimeout(timer);
@@ -375,7 +413,10 @@ function refreshBase(code, prio) {
     const base = await getStored(code, 'base');
     const lastT = base?.bars?.length ? base.bars[base.bars.length - 1][0] * 1000 : 0;
     const full = !base || !base.bars?.length || now - (base.fullAt || 0) > 30 * 86400e3 || now - lastT > 25 * 86400e3;
-    const parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=${full ? '10y' : '1mo'}`));
+    // 継ぎ足しは通常「直近5日分」だけ（約1KB）。しばらく空いたときは1か月分
+    const range = full ? '10y' : now - lastT < 4 * 86400e3 ? '5d' : '1mo';
+    const parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=${range}`,
+      { code, what: full ? '日足10年分（初回）' : `日足の更新（直近${range === '5d' ? '5日' : '1か月'}）` }));
     const daily = full ? dedupeDaily(parsed.bars) : mergeTail(base.bars, parsed.bars);
     const v = { ...packBase(daily, base, full), meta: parsed.meta, fetchedAt: now, fullAt: full ? now : base.fullAt };
     await putStored(code, 'base', v);
@@ -387,7 +428,7 @@ function refreshIntraday(code, prio) {
   return once(keyOf(code, '5m'), () => schedule(prio, async () => {
     const now = Date.now();
     const bars = cfg.demo ? demoIntraday(code)
-      : parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=5m&range=5d`)).bars;
+      : parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=5m&range=5d`, { code, what: '5分足' })).bars;
     const v = { bars, meta: {}, fetchedAt: now };
     await putStored(code, '5m', v);
     return v;
@@ -474,13 +515,17 @@ export async function searchRemote(q) {
     const order = routeOrder();
     let last;
     for (const r of order) {
+      const t0 = Date.now();
+      const ev = { t: t0, code: '', what: `銘柄検索「${q}」`, route: r.label, ok: false, ms: 0, note: '' };
       try {
         const res = await fetch(r.build(`${YH[1]}/v1/finance/search?q=${enc(q)}&quotesCount=15&newsCount=0&lang=ja-JP&region=JP`), { cache: 'no-store' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const t = await res.text();
         const i = t.indexOf('{');
-        return r.id === 'allorigins-get' ? JSON.parse(JSON.parse(t).contents) : JSON.parse(t.slice(i, t.lastIndexOf('}') + 1));
-      } catch (e) { last = e; }
+        const j = r.id === 'allorigins-get' ? JSON.parse(JSON.parse(t).contents) : JSON.parse(t.slice(i, t.lastIndexOf('}') + 1));
+        ev.ok = true; ev.ms = Date.now() - t0; record(ev);
+        return j;
+      } catch (e) { last = e; ev.ms = Date.now() - t0; ev.note = e.message; record(ev); }
     }
     throw last || new Error('検索失敗');
   });

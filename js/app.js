@@ -66,16 +66,27 @@ function rebuildCharts() {
 }
 
 /* ---------------- 巡回 ---------------- */
-function neighbor(delta) {
+function neighbor(delta, from = st.code) {
   const n = list.length;
   if (!n) return null;
-  let i = list.findIndex((x) => x.code === st.code);
+  let i = list.findIndex((x) => x.code === from);
   if (i < 0) i = delta > 0 ? -1 : 0;
   for (let k = 1; k <= n; k++) {
     const j = (((i + delta * k) % n) + n) % n;
     if (list[j].enabled) return list[j].code;
   }
   return null;
+}
+// この先表示する銘柄（次の次から n 件）
+function upcoming(n) {
+  const out = [];
+  let code = neighbor(1);
+  for (let i = 0; i < n && code; i++) {
+    code = neighbor(1, code);
+    if (!code || code === st.code || out.includes(code)) break;
+    out.push(code);
+  }
+  return out;
 }
 function enabledCount() { return list.filter((x) => x.enabled).length; }
 const marketOf = (code) => (isUS(code) ? 'US' : 'JP');
@@ -199,7 +210,7 @@ function tick() {
    表示を待たずに、登録銘柄のチャートデータを1件ずつ順番に取得・更新しておく。
    未取得の銘柄を優先し、場中は15分以上古いものだけを更新する（通信量を抑えるため）。 */
 const WARM_EVERY_MS = 8000;
-const WARM_MAX_AGE = 15 * 60e3;
+const WARM_MAX_AGE = 10 * 60e3;
 let warmAt = 0, warmBusy = false, warmCursor = 0;
 const haveData = new Set(); // データ取得済みと確認できた銘柄（毎回の確認を省くため）
 async function warmTick(now) {
@@ -220,7 +231,15 @@ async function warmTick(now) {
       if (tfs.every((tf) => c[tf]?.bars?.length)) haveData.add(x.code);
       else { target = x.code; break; }
     }
-    if (!target) target = en[warmCursor++ % en.length].code;
+    // 未取得が無ければ、この先表示する3銘柄だけ最新化（場中に10分以上古いもの）
+    if (!target) {
+      for (const code of upcoming(3)) {
+        const c = await D.cachedSet(code, tfs);
+        const at = Math.min(...tfs.map((tf) => c[tf]?.fetchedAt || 0));
+        if (M.marketPhase(now, marketOf(code)).open && now - at > WARM_MAX_AGE) { target = code; break; }
+      }
+    }
+    if (!target) return;
     const r = await D.loadSet(target, tfs, { prio: D.PRIO.warm, maxAgeMs: WARM_MAX_AGE });
     if (r.fetched && !r.error) haveData.add(target);
     if (r.fetched && !r.error && st.lastError && target === st.code) st.lastError = null;
@@ -241,7 +260,8 @@ function updateStatus(now = Date.now()) {
   dot.className = `dot ${err ? 'err' : ph.open ? 'ok' : 'closed'}${loading ? ' busy' : ''}`;
   $('statusText').textContent = `${m === 'US' ? '米国' : '東証'}・${ph.open ? `接続中（${ph.label}）` : ph.label}`;
   const e = stages[front].entries?.[settings.leftTf] || stages[front].entries?.[settings.rightTf];
-  $('updatedAt').textContent = e?.fetchedAt ? `${M.fmtStamp(e.fetchedAt, now)} 更新` : '';
+  const ns = D.netStats();
+  $('updatedAt').textContent = ns.active ? '通信中…' : ns.lastAt ? `最終通信 ${M.fmtStamp(ns.lastAt, now)}` : '通信なし';
   const errEl = $('errText');
   errEl.hidden = !err;
   if (err) {
@@ -586,7 +606,8 @@ function doSearch() {
   if (!dictReady()) { $('addMsg').textContent = '銘柄辞書を読み込み中…'; loadDict().then(() => { if (seq === searchSeq) doSearch(); }); return; }
   let results = searchLocal(q);
   const asCode = normCode(q);
-  if (!results.some((x) => x.code === asCode) && validCode(asCode)) results.unshift({ code: asCode, name: lookupName(asCode), market: isUS(asCode) ? '米国' : '東証' });
+  // 入力がそのままコード／ティッカーとして使える形なら、候補の最後に追加（辞書に無い新しい銘柄用）
+  if (!results.some((x) => x.code === asCode) && validCode(asCode)) results.push({ code: asCode, name: lookupName(asCode) || '（コードとして登録）', market: isUS(asCode) ? '米国' : '東証' });
   const ascii = /^[\x20-\x7E]+$/.test(q);
   showResults(results, results.length ? '候補をタップしてください' : (ascii ? '検索中…' : '見つかりませんでした'));
   // Yahoo 検索は通信が必要なので、英字の入力が止まってから1回だけ
@@ -625,10 +646,53 @@ $('addForm').addEventListener('submit', (e) => {
 });
 
 /* ---------------- イベント ---------------- */
-$('errText').addEventListener('click', () => {
-  if (!st.lastError) return;
-  alert(`データを取得できませんでした。\n\n${String(st.lastError.message || st.lastError).split(' / ').join('\n')}\n\n【中継経路の状態】\n${D.routeStatus().join('\n')}\n\n保存済みのデータがあればそれを表示し、自動で再取得を続けます。`);
-});
+/* ---------------- 通信状況ダイアログ ---------------- */
+const netDlg = $('netDialog');
+const KIND_SHORT = (w) => w;
+function renderNet() {
+  if (!netDlg.open) return;
+  const now = Date.now();
+  const ns = D.netStats();
+  $('netSummary').innerHTML = `
+    <div><span class="k">直近1分</span><b>${ns.lastMin}</b><span class="u">/ ${ns.perMin}回</span></div>
+    <div><span class="k">今日</span><b>${ns.today}</b><span class="u">回</span></div>
+    <div><span class="k">最終通信</span><b>${ns.lastAt ? M.fmtStamp(ns.lastAt, now) : '—'}</b></div>
+    <div><span class="k">状態</span><b>${ns.active ? '通信中' : ns.pausedUntil ? '一時停止中' : '待機中'}</b>${ns.queued ? `<span class="u">待ち${ns.queued}件</span>` : ''}</div>`;
+  // これからの予定
+  const lines = [];
+  const cur = st.code;
+  if (cur) {
+    const m = marketOf(cur);
+    const ph = M.marketPhase(now, m);
+    const e = stages[front].entries?.[settings.leftTf] || stages[front].entries?.[settings.rightTf];
+    const age = e?.fetchedAt ? Math.round((now - e.fetchedAt) / 1000) : null;
+    if (!ph.open) lines.push(`表示中の ${esc(cur)}：${m === 'US' ? '米国' : '東証'}は${ph.label}です。引け後のデータを取得済みなら通信しません。`);
+    else if (age != null) lines.push(`表示中の ${esc(cur)}：${age < 60 ? `${age}秒` : `${Math.floor(age / 60)}分`}前に取得。${age >= CACHE_MIN * 60 ? '次に表示するときに最新化します。' : `あと${Math.max(0, CACHE_MIN * 60 - age)}秒は通信しません。`}`);
+    const next = neighbor(1);
+    if (next && next !== cur) {
+      const lead = Math.min(PREFETCH_SEC, settings.interval - 2);
+      const wait = st.remaining - lead;
+      lines.push(pauseReason(now) ? `次の ${esc(next)}：巡回停止中のため事前取得は待機中` : wait > 0 ? `次の ${esc(next)}：あと${wait}秒で事前取得（必要な場合のみ）` : `次の ${esc(next)}：事前取得済み、または取得不要`);
+    }
+  }
+  const missing = list.filter((x) => x.enabled && !haveData.has(x.code)).length;
+  lines.push(missing ? `データ未取得の銘柄：約${missing}件を8秒に1件ずつ取得中` : '全銘柄のデータを取得済み（裏での取得は次の3銘柄の最新化のみ）');
+  $('netNow').innerHTML = lines.map((l) => `<div>・${l}</div>`).join('');
+  const log = D.netLog();
+  $('netLogBody').innerHTML = log.length ? log.slice(0, 40).map((x) => `
+    <tr class="${x.ok ? '' : 'ng'}">
+      <td class="num">${M.fmtClock(x.t)}</td>
+      <td>${esc(x.code)}</td>
+      <td>${esc(KIND_SHORT(x.what))}<div class="muted small">${esc(x.route)}</div></td>
+      <td>${x.ok ? `成功 <span class="muted">${(x.ms / 1000).toFixed(1)}秒</span>` : `<span class="err">失敗</span>`}${x.note ? `<div class="muted small">${esc(x.note)}</div>` : ''}</td>
+    </tr>`).join('') : '<tr><td colspan="4" class="muted">この画面を開いてからの通信はまだありません（保存済みのデータで表示中）</td></tr>';
+}
+function openNet() { netDlg.showModal(); renderNet(); }
+$('status').addEventListener('click', openNet);
+$('btnNetClose').addEventListener('click', () => netDlg.close());
+netDlg.addEventListener('click', (e) => { if (e.target === netDlg) netDlg.close(); });
+D.onNetLog(() => { renderNet(); updateStatus(); });
+setInterval(renderNet, 1000);
 $('btnMenu').addEventListener('click', openSettings);
 $('btnClose').addEventListener('click', closeSettings);
 $('btnSave').addEventListener('click', closeSettings);
