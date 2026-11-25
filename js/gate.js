@@ -6,7 +6,7 @@
 // ※個人情報を守るためのものではなく、知らない人による通信を防ぐための簡易的な鍵です。
 //   パスワードはそのまま置かず、照合用の値（SHA-256）だけを置いています。
 
-const PASS_HASH = '0ffae97c58225a78171d63a647f57490c31186a33763292dfca64a49f2852ebd';
+const PASS_HASH = '185c812111b6d6e79b93c448cc8017b23f8b10abef069db13fd2762801c3b1a8';
 const AUTH_KEY = 'tm.auth.v1';
 const LOCK_KEY = 'tm.authlock.v1';
 // 間違えた回数に応じた待ち時間：5回で5分、10回で30分、15回以上は1時間ずつ
@@ -23,7 +23,7 @@ async function sha256(text) {
 function startApp() {
   document.body.classList.remove('locked');
   document.getElementById('gate')?.remove();
-  import('./app.js?v=20261125112850');
+  import('./app.js?v=20261125113521');
 }
 
 function showGate() {
@@ -34,7 +34,7 @@ function showGate() {
   g.innerHTML = `
     <form class="gate-box" autocomplete="off">
       <div class="gate-title">TRADE MONITOR</div>
-      <p class="gate-text">パスワードを入力してください</p>
+      <p class="gate-text"><span class="gate-hint" title="ヒント" aria-label="ヒント：かぼちゃ">🎃</span>パスワードを入力してください</p>
       <input id="gatePass" type="password" inputmode="text" autocapitalize="characters" spellcheck="false" aria-label="パスワード">
       <button type="submit" class="btn primary block" id="gateOk">開く</button>
       <p class="gate-msg" id="gateMsg"></p>
