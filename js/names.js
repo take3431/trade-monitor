@@ -7,7 +7,7 @@ export const isUS = (code) => /^[A-Z]/.test(code);
 export const JP_RE = /^[0-9][0-9A-Z]{3}$/;
 export const US_RE = /^[A-Z][A-Z0-9]{0,5}(-[A-Z])?$/;
 
-import { US } from './us-names.js?v=20261125135012';
+import { US, US_TOP } from './us-names.js?v=20261125143359';
 
 export const US_NAMES = Object.fromEntries(Object.entries(US).map(([k, v]) => [k, v[0]]));
 
@@ -26,15 +26,19 @@ const LETTER_KANA = {
   K: 'ケー', L: 'エル', M: 'エム', N: 'エヌ', O: 'オー', P: 'ピー', Q: 'キュー', R: 'アール', S: 'エス', T: 'ティー',
   U: 'ユー', V: 'ブイ', W: 'ダブリュー', X: 'エックス', Y: 'ワイ', Z: 'ゼット',
 };
+const TOP_RANK = new Map(US_TOP.map((c, i) => [c, i]));
 function buildIndex() {
   const rows = [];
   for (const [code, [name, m, rd, size = 5]] of Object.entries(jp || {})) {
     const market = MARKET_LABEL[m] || '東証';
-    rows.push({ code, name, market, size, k: norm(name), r: (rd || '').split('|').map(norm), minor: /ETF|PRO|REIT|出資/.test(market) });
+    rows.push({ code, name, market, size, rank: 9999, k: norm(name), r: (rd || '').split('|').map(norm), minor: /ETF|PRO|REIT|出資/.test(market) });
   }
   for (const [code, [name, en]] of Object.entries(US)) {
     const etf = /ETF|SPDR|ファンド|トラスト/.test(name);
-    rows.push({ code, name, market: etf ? '米国ETF' : '米国', size: 1, k: norm(name), r: [norm(code), norm(en)], minor: false });
+    // 規模の目安：時価総額の上位50社は東証のCore30、上位300社はLarge70と同じ扱い。それ以外は中型株と同じ
+    const rank = TOP_RANK.has(code) ? TOP_RANK.get(code) : 9999;
+    const size = rank < 50 ? 1 : rank < 300 || etf ? 2 : 3;
+    rows.push({ code, name, market: etf ? '米国ETF' : '米国', size, rank, k: norm(name), r: [norm(code), norm(en)], minor: false });
   }
   // 英字の読み（JP→ジェイピー、NTT→エヌティーティー）でも探せるようにする
   for (const x of rows) {
@@ -48,7 +52,7 @@ function buildIndex() {
 export function loadDict() {
   if (jp) return Promise.resolve(jp);
   if (!jpLoading) {
-    jpLoading = fetch('data/jp-stocks.json?v=20261125135012')
+    jpLoading = fetch('data/jp-stocks.json?v=20261125143359')
       .then((r) => r.json())
       .then((j) => { jp = j.list; buildIndex(); return jp; })
       .catch(() => { jpLoading = null; return {}; });
@@ -84,9 +88,10 @@ export function searchLocal(q, limit = 30) {
     else if (n2 && (x.k2.startsWith(n2) || x.r2.some((r) => r.startsWith(n2)))) score = 4;
     else if (n2 && n2.length >= 3 && (x.k2.includes(n2) || x.r2.some((r) => r.includes(n2)))) score = 5;
     else continue;
-    hits.push({ code: x.code, name: x.name, market: x.market, size: x.size, score: score * 10 + (x.minor ? 5 : 0) });
+    hits.push({ code: x.code, name: x.name, market: x.market, size: x.size, rank: x.rank, score: score * 10 + (x.minor ? 5 : 0) });
   }
   // 同じ一致度なら、規模の大きい会社（TOPIX Core30 → Large70 → Mid400 → …）、次に社名の短いものを上に
-  hits.sort((a, b) => a.score - b.score || a.size - b.size || a.name.length - b.name.length || a.code.localeCompare(b.code));
+  // 米国株は時価総額の大きい順
+  hits.sort((a, b) => a.score - b.score || a.size - b.size || a.rank - b.rank || a.name.length - b.name.length || a.code.localeCompare(b.code));
   return hits.slice(0, limit);
 }
