@@ -9,8 +9,8 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261125161626';
-import { yahooSymbol, marketOfCode } from './names.js?v=20261125161626';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261125164254';
+import { yahooSymbol, marketOfCode } from './names.js?v=20261125164254';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = yahooSymbol;
@@ -92,12 +92,83 @@ function routeOrder() {
 }
 
 function routeOk(r) { r.score = r.score * 0.7 + 0.3; cooldown.delete(r.id); }
-function routeFail(r, status) {
-  r.score *= 0.6;
-  const ms = status === 401 || status === 403 ? 30 * 60e3 : status === 429 ? 90e3 : 20e3;
-  cooldown.set(r.id, Date.now() + ms);
-  if (status === 429) pauseAll(15e3); // 回数制限を受けたら全体の通信も少し止める
+
+/* ---- 相手が嫌がり始めたら、すぐに引く ----
+   ・回数制限（429）を受けたら全体を止める。30分以内に続けて受けるほど長く（15秒→1分→5分→30分）。
+     相手が「何秒待って」と返してきたら（Retry-After）、それより短くはしない。
+   ・10分間に通信の失敗が5回以上あったら、表示中の銘柄以外の通信（先読み・裏の取り込み）を30分止める。 */
+const rateHits = [];
+const failTimes = [];
+let softHold = 0;
+const quietError = (msg, flag) => Object.assign(new Error(msg), { quiet: true, [flag]: true });
+// 通信を控えている最中か（回数制限で全体を止めている間も含む）
+export const cooling = () => softHold > Date.now() || hold > Date.now();
+function noteFailure() {
+  const now = Date.now();
+  while (failTimes.length && now - failTimes[0] > 10 * 60e3) failTimes.shift();
+  failTimes.push(now);
+  if (failTimes.length >= 5 && softHold < now) {
+    softHold = now + 30 * 60e3;
+    record({ t: now, code: '—', what: '失敗が続いたため、表示中の銘柄以外の通信を30分控えます', route: '—', ok: true, ms: 0, note: '' });
+  }
 }
+// countHit：同じ1回の取得で複数の経路から回数制限を受けても、段階を上げるのは1回だけ
+function routeFail(r, status, retryAfterMs = 0, countHit = true) {
+  r.score *= 0.6;
+  const now = Date.now();
+  if (status === 429) {
+    while (rateHits.length && now - rateHits[0] > 30 * 60e3) rateHits.shift();
+    if (countHit || !rateHits.length) rateHits.push(now);
+    const step = [15e3, 60e3, 5 * 60e3, 30 * 60e3][Math.min(rateHits.length - 1, 3)];
+    const wait = Math.max(step, Math.min(retryAfterMs, 60 * 60e3));
+    cooldown.set(r.id, now + Math.max(90e3, wait));
+    pauseAll(wait);
+    if (wait >= 60e3) record({ t: now, code: '—', what: `回数制限を受けたため、通信を${Math.round(wait / 60e3)}分止めます`, route: r.label, ok: true, ms: 0, note: '' });
+  } else {
+    cooldown.set(r.id, now + (status === 401 || status === 403 ? 30 * 60e3 : 20e3));
+  }
+}
+// Retry-After（秒数または日時）をミリ秒に
+function retryAfterOf(res) {
+  const v = res.headers?.get?.('Retry-After');
+  if (!v) return 0;
+  const n = Number(v);
+  const ms = Number.isFinite(n) ? n * 1000 : Date.parse(v) - Date.now();
+  return ms > 0 ? ms : 0;
+}
+
+/* ---- タブを2つ開いても、通信するのは1つだけ ----
+   画面に出ているタブのうち1つだけが通信し、ほかのタブは保存済みのデータで表示する（同じ端末・同じブラウザ内）。
+   通信役のタブは4秒ごとに印を更新し、10秒更新が無ければ（閉じた・裏に回った）別のタブが引き継ぐ。 */
+const TAB_ID = Math.random().toString(36).slice(2);
+const LEADER_KEY = 'tm.leader.v1';
+let leader = true;
+function checkLeader() {
+  if (cfg.demo || typeof document === 'undefined') { leader = true; return; }
+  try {
+    const now = Date.now();
+    const cur = JSON.parse(localStorage.getItem(LEADER_KEY) || 'null');
+    const mine = !!cur && cur.id === TAB_ID;
+    if (document.hidden) {
+      if (mine) localStorage.removeItem(LEADER_KEY); // 裏に回ったら、すぐに譲る
+      leader = false;
+    } else if (mine || !cur || now - cur.t > 10e3) {
+      localStorage.setItem(LEADER_KEY, JSON.stringify({ id: TAB_ID, t: now }));
+      leader = true;
+    } else {
+      leader = false;
+    }
+  } catch { leader = true; } // 保存できない環境では、今までどおり通信する
+}
+export const isLeader = () => { checkLeader(); return leader; };
+if (typeof window !== 'undefined') {
+  setInterval(checkLeader, 4000);
+  document.addEventListener('visibilitychange', checkLeader);
+  window.addEventListener('pagehide', () => {
+    try { const cur = JSON.parse(localStorage.getItem(LEADER_KEY) || 'null'); if (cur?.id === TAB_ID) localStorage.removeItem(LEADER_KEY); } catch { /* ignore */ }
+  });
+}
+const followerError = () => quietError('別のタブで通信中のため、保存済みのデータで表示します', 'follower');
 
 const HEDGE_MS = 6000;
 let hostFlip = 0;
@@ -118,6 +189,7 @@ const BUDGET_KEY = 'tm.budget.v1';
 let budget = { d: '', n: 0, i: 0 };
 try { budget = JSON.parse(localStorage.getItem(BUDGET_KEY)) || budget; } catch { /* ignore */ }
 function budgetToday() {
+  try { budget = JSON.parse(localStorage.getItem(BUDGET_KEY)) || budget; } catch { /* ignore */ }
   const today = dayKey(Date.now());
   if (budget.d !== today) budget = { d: today, n: 0, i: 0 };
   budget.i = budget.i || 0;
@@ -154,6 +226,7 @@ let lastNetAt = 0;
 export const onNetLog = (fn) => netListeners.add(fn);
 export const netLog = () => netLogList;
 function record(ev) {
+  try { netDay = JSON.parse(localStorage.getItem(NET_DAY_KEY)) || netDay; } catch { /* ignore */ }
   const today = dayKey(Date.now());
   if (netDay.d !== today) netDay = { d: today, n: 0 };
   netDay.n++;
@@ -176,9 +249,11 @@ export function netStats() {
 }
 
 function fetchYahoo(path, ctx = {}, check = (j) => j && j.chart) {
-  const order = routeOrder();
+  if (!isLeader()) return Promise.reject(followerError());
+  // 通信を控えている間は、試す経路も2つまで（失敗が続いている相手に何度も頼まない）
+  const order = cooling() ? routeOrder().slice(0, 2) : routeOrder();
   return new Promise((resolve, reject) => {
-    let idx = 0, pending = 0, done = false;
+    let idx = 0, pending = 0, done = false, hit429 = false, n429 = 0;
     const errs = [], ctrls = [];
     let hedge = null;
     const finish = () => { done = true; clearTimeout(hedge); ctrls.forEach((c) => c.abort()); };
@@ -195,12 +270,13 @@ function fetchYahoo(path, ctx = {}, check = (j) => j && j.chart) {
       const timer = setTimeout(() => ctrl.abort(), cfg.timeout);
       pending++;
       (async () => {
-        let status = 0;
+        let status = 0, retryAfter = 0;
         const t0 = Date.now();
         const ev = { t: t0, code: ctx.code || '', what: ctx.what || '', route: r.label, ok: false, ms: 0, note: '' };
         try {
           const res = await fetch(r.build(url), { signal: ctrl.signal, cache: 'no-store' });
           status = res.status;
+          if (status === 429 || status === 503) retryAfter = retryAfterOf(res);
           if (!res.ok) throw new Error(status === 401 || status === 403 ? '拒否' : status === 429 ? '回数制限' : `HTTP ${status}`);
           const json = r.parse(await res.text());
           if (!check(json)) throw new Error('応答形式不正');
@@ -215,21 +291,25 @@ function fetchYahoo(path, ctx = {}, check = (j) => j && j.chart) {
           ev.ms = Date.now() - t0; ev.note = why;
           record(ev);
           if (done) return;
-          routeFail(r, status);
+          routeFail(r, status, retryAfter, !hit429);
+          if (status === 429) { hit429 = true; n429++; }
+          if (status !== 404) noteFailure(); // 404 は銘柄コード違いなので、相手の混雑とは数えない
           errs.push(`${r.label}: ${why}`);
         } finally {
           clearTimeout(timer);
           pending--;
           if (!done) {
-            if (idx < order.length) launch();
+            // 2つの経路で続けて回数制限を受けたら、残りの経路は試さない（相手側が混んでいるので引く）
+            if (idx < order.length && n429 < 2) launch();
             else if (pending === 0) { finish(); reject(new Error(errs.join(' / ') || '取得失敗')); }
           }
         }
       })();
     };
     launch();
-    // 遅いときは次の経路も並行して試す。ただし予備の経路が最近うまくいっている場合だけ（無駄打ちしない）
-    hedge = setTimeout(() => { if (order[idx] && order[idx].score >= 0.5) launch(); }, HEDGE_MS);
+    // 遅いときは次の経路も並行して試す。ただし表示中の銘柄だけ、かつ予備の経路が最近うまくいっている場合だけ
+    // （先読み・裏の取り込みは待てるので、同じデータを2回取らない）
+    hedge = setTimeout(() => { if (ctx.prio === PRIO.show && order[idx] && order[idx].score >= 0.5) launch(); }, HEDGE_MS);
   });
 }
 
@@ -259,6 +339,10 @@ function pump() {
   if (active >= MAX_ACTIVE || !queue.length) return;
   { const bs = budgetStatus(); if (bs.over && bs.initOver) { while (queue.length) queue.shift().reject(overError()); return; } }
   const now = Date.now();
+  if (softHold > now && queue[0].prio !== PRIO.show) {
+    while (queue.length && queue[0].prio !== PRIO.show) queue.shift().reject(quietError('通信を控えています', 'cooling'));
+    if (!queue.length) return;
+  }
   while (starts.length && now - starts[0] > 60e3) starts.shift();
   const limit = queue[0].prio === PRIO.warm ? PER_MIN_WARM : PER_MIN;
   let wait = Math.max(lastStart + MIN_GAP_MS - now, hold - now);
@@ -325,17 +409,19 @@ class LRU extends Map {
 }
 const MEM_MAX = 60;
 const mem = new LRU(MEM_MAX);
+const memAt = new Map(); // key -> 保存先から読んだ（書いた）時刻（通信役でないタブが読み直す目安）
 const keyOf = (code, kind) => `${cfg.demo ? 'demo|' : ''}${code}|${kind}`;
 async function getStored(code, kind) {
   const k = keyOf(code, kind);
-  if (mem.has(k)) return mem.get(k);
+  if (mem.has(k) && (leader || Date.now() - (memAt.get(k) || 0) < 15e3)) return mem.get(k);
   const v = await idb('readonly', (s) => s.get(k));
-  if (v) mem.set(k, v);
-  return v;
+  if (v) { mem.set(k, v); memAt.set(k, Date.now()); }
+  return v ?? mem.get(k);
 }
 async function putStored(code, kind, v) {
   const k = keyOf(code, kind);
   mem.set(k, v);
+  memAt.set(k, Date.now());
   if (cfg.demo) return;
   let ok = await idb('readwrite', (s) => s.put(v, k));
   if (ok == null && lastIdbError === 'QuotaExceededError') {
@@ -428,6 +514,7 @@ function parseChart(json) {
   if (!r) {
     const e = new Error(`銘柄データなし（${json?.chart?.error?.description || json?.chart?.error?.code || '不明'}）`);
     e.noData = true;
+    e.quiet = true;
     throw e;
   }
   const ts = r.timestamp || [];
@@ -820,6 +907,20 @@ async function refreshViaBatch(code, prio) {
   return (await p).has(code);
 }
 
+/* Yahoo に「データなし」と言われた銘柄（上場廃止・コード違いなど）は、その日は再挑戦しない（ページを読み込み直しても）。
+   翌日に1回だけ試し直す。登録し直したときは記録を消す。 */
+const NODATA_KEY = 'tm.nodata.v1';
+function noDataMap() { try { return JSON.parse(localStorage.getItem(NODATA_KEY)) || {}; } catch { return {}; } }
+export function noDataToday(code) { return noDataMap()[code] === dayKey(Date.now()); }
+function setNoData(code, on) {
+  const m = noDataMap();
+  const today = dayKey(Date.now());
+  for (const k of Object.keys(m)) if (m[k] !== today) delete m[k];
+  if (on) m[code] = today; else delete m[code];
+  try { localStorage.setItem(NODATA_KEY, JSON.stringify(m)); } catch { /* ignore */ }
+}
+export const clearNoData = (code) => { if (noDataMap()[code]) setNoData(code, false); };
+
 // 失敗が続く銘柄（上場廃止・コード違いなど）は、間隔を空けてから再挑戦する
 const failures = new Map(); // code -> { n, until }
 export function failureOf(code) { return failures.get(code) || null; }
@@ -829,6 +930,7 @@ export async function loadSet(code, tfs, { force = false, onEntry = null, prio =
   let fetched = false, error = null, changed = false;
   const kinds = [...new Set(tfs.map(kindOf))];
   const market = mkt(code);
+  if (!force && noDataToday(code)) return { entries, fetched, error: quietError('Yahoo にこの銘柄のデータがありません', 'noData'), skipped: true };
   const f = failures.get(code);
   // 表示中の銘柄は最短1分、裏の取得は 2,4,8…最大30分 空ける
   if (f && !force && Date.now() < (prio === PRIO.show ? Math.min(f.until, f.at + 60e3) : f.until)) {
@@ -845,7 +947,7 @@ export async function loadSet(code, tfs, { force = false, onEntry = null, prio =
       if (kind === 'base' && cur?.bars?.length && !force && !cfg.demo && !fullDue(code, cur)) {
         // まとめて取得で更新。できなかった場合（当日の始値が無い・過去の足が抜けている）だけ個別に取得
         let left = true;
-        try { left = await refreshViaBatch(code, prio); } catch (e) { if (e.budget) throw e; }
+        try { left = await refreshViaBatch(code, prio); } catch (e) { if (e.budget || e.quiet) throw e; }
         v = left ? await refreshBase(code, prio) : mem.get(keyOf(code, 'base'));
       } else {
         v = kind === 'base' ? await refreshBase(code, prio) : await refreshIntraday(code, prio);
@@ -859,11 +961,13 @@ export async function loadSet(code, tfs, { force = false, onEntry = null, prio =
       error = e;
     }
   }
-  if (error && !error.budget) {
+  if (error?.noData) setNoData(code, true);
+  if (error && !error.budget && !error.quiet) {
     const n = (failures.get(code)?.n || 0) + 1;
     failures.set(code, { n, at: Date.now(), until: Date.now() + Math.min(30, 2 ** n) * 60e3, error });
   } else if (fetched) {
     failures.delete(code);
+    clearNoData(code);
   }
   return { entries, fetched, changed, error };
 }
@@ -889,6 +993,7 @@ export async function searchRemote(q) {
   if (cfg.demo) return [];
   const key = q.trim().toLowerCase();
   const hit = searchCache.get(key);
+  if (!(hit && Date.now() - hit.at < 10 * 60e3) && !isLeader()) throw followerError();
   const json = hit && Date.now() - hit.at < 10 * 60e3 ? hit.json : await schedule(PRIO.show, async () => {
     const order = routeOrder();
     let last;

@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261125161626';
-import * as D from './data.js?v=20261125161626';
-import { Stage, themeColors } from './chart.js?v=20261125161626';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125161626';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125161626';
+import * as M from './market.js?v=20261125164254';
+import * as D from './data.js?v=20261125164254';
+import { Stage, themeColors } from './chart.js?v=20261125164254';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125164254';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125164254';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -268,7 +268,7 @@ async function show(code, { nav = false, force = false, retry = false, auto = fa
   }
   updateStatus();
   // 一部のチャートが取れなかったときは、巡回を待たずに少し後で再挑戦
-  if (res.error && !(st.retry?.code === code && st.retry.n >= 3)) {
+  if (res.error && !res.error.quiet && !(st.retry?.code === code && st.retry.n >= 3)) {
     const n = st.retry?.code === code ? st.retry.n + 1 : 1;
     st.retry = { code, n };
     setTimeout(() => { if (st.code === code && seq === st.seq) show(code, { retry: true }); }, 6000 * n);
@@ -309,7 +309,7 @@ async function prefetch(code) {
     const tfs = neededTfs();
     const has = Object.values(await D.cachedSet(code, tfs)).some((e) => e?.bars?.length);
     const r = await D.loadSet(code, tfs, { prio: has ? D.PRIO.prefetch : D.PRIO.warm });
-    if (r.error) st.lastError = r.error;
+    if (r.error && !r.error.quiet) st.lastError = r.error;
   } finally {
     st.prefetching = null;
   }
@@ -347,9 +347,10 @@ const haveData = new Set(); // データ取得済みと確認できた銘柄（�
 async function warmTick(now) {
   if (warmBusy || st.settingsOpen || document.hidden || now - warmAt < WARM_EVERY_MS || !D.isIdle()) return;
   if (!D.initAvailable()) return; // 今日の取り込み枠を使い切ったら、裏での取り込みは翌日に
+  if (D.cooling() || !D.isLeader()) return; // 通信を控えている間・別のタブが通信役のときは取りに行かない
   warmAt = now;
   const tfs = neededTfs();
-  const ok = (code) => { const f = D.failureOf(code); return !f || now > f.until; };
+  const ok = (code) => { const f = D.failureOf(code); return (!f || now > f.until) && !D.noDataToday(code); };
   const en = list.filter((x) => x.enabled && ok(x.code));
   if (!en.length) return;
   warmBusy = true;
@@ -388,12 +389,16 @@ function updateStatus(now = Date.now()) {
   const ns = D.netStats();
   const b = D.budgetStatus();
   const mb = $('modeBadge');
-  mb.hidden = !(b.over || approxMode());
-  mb.textContent = b.over ? '本日の通信上限' : '始値は近似';
-  mb.title = b.over ? `今日の通信が${b.cap}回に達したため、保存済みのデータで表示しています（明日0時に再開）` : `表示対象が${EXACT_OPEN_MAX}銘柄を超えているため、当日の始値は「${OPEN_LABEL[currentPlan().openMode]}」で近似しています`;
+  const cool = D.cooling();
+  const follower = !D.isLeader();
+  mb.hidden = !(b.over || cool || follower || approxMode());
+  mb.textContent = b.over ? '本日の通信上限' : cool ? '通信を控えています' : follower ? '別のタブで通信中' : '始値は近似';
+  mb.title = b.over ? `今日の通信が${b.cap}回に達したため、保存済みのデータで表示しています（明日0時に再開）`
+    : cool ? '回数制限や通信の失敗が続いたため、しばらく通信を控えています（相手の負担を減らし、ban を防ぐため）'
+    : follower ? 'このアプリを別のタブでも開いているため、通信はそちらに任せ、保存済みのデータで表示しています' : `表示対象が${EXACT_OPEN_MAX}銘柄を超えているため、当日の始値は「${OPEN_LABEL[currentPlan().openMode]}」で近似しています`;
   mb.classList.toggle('warn', b.over);
   const errEl = $('errText');
-  errEl.hidden = !err || !!err.budget;
+  errEl.hidden = !err || !!err.budget || !!err.quiet;
   if (err) {
     errEl.textContent = (e ? '通信エラー：前回データを表示中' : '通信エラー：データ未取得') + '（タップで詳細）';
     errEl.title = String(err.message || err);
@@ -547,7 +552,7 @@ function renderList() {
   $('listBody').innerHTML = list.map((x, i) => `
     <tr data-code="${esc(x.code)}">
       <td class="c-no"><span class="grip" title="ドラッグで並び替え"><svg class="ico"><use href="#i-grip"/></svg></span><span class="no">${String(i + 1).padStart(3, '0')}</span></td>
-      <td class="c-code num">${esc(x.code)}${isIndex(x.code) ? '<span class="tag idx">指数</span>' : isUS(x.code) ? '<span class="tag">米</span>' : ''}</td>
+      <td class="c-code num">${esc(x.code)}${isIndex(x.code) ? '<span class="tag idx">指数</span>' : isUS(x.code) ? '<span class="tag">米</span>' : ''}${D.noDataToday(x.code) ? '<span class="tag nd" title="Yahoo にこの銘柄のデータがありません（上場廃止・コード違いの可能性）。今日は取りに行きません">データなし</span>' : ''}</td>
       <td class="c-name"><button class="link rename">${esc(x.name || '（名称未設定）')}</button></td>
       <td class="c-price r"></td>
       <td class="c-target"><div class="tgt-box"><input class="tgt" type="text" autocomplete="off" enterkeyhint="done" placeholder="株価を入力" aria-label="${esc(x.code)} の設定株価"><span class="tgt-dir"></span></div></td>
@@ -1039,6 +1044,7 @@ $('addForm').addEventListener('submit', (e) => {
   if (added.n >= ADD_PER_DAY) { msg.textContent = `新規登録は1日${ADD_PER_DAY}銘柄までです（通信の負担を抑えるため）。明日また登録できます`; return; }
   added.n++;
   save(ADD_KEY, added);
+  D.clearNoData(code);
   list.push({ code, name: $('addName').value.trim() || lookupName(code) || '', enabled: true });
   saveList();
   renderList();
