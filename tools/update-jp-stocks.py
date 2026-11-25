@@ -10,6 +10,7 @@
 import io, json, pathlib, unicodedata, urllib.request
 import openpyxl
 import pykakasi
+from jp_aliases import with_aliases  # 通称・略称（NEC、ホンダ 等）
 
 _kks = pykakasi.kakasi()
 # 読みが分かれやすい語は別の読みも入れておく
@@ -44,7 +45,7 @@ for r in rows:
     name = unicodedata.normalize("NFKC", str(r[2])).strip()
     # 規模（TOPIX の規模区分）：検索結果で大きな会社を上に出すために使う
     size = {"TOPIX Core30": 0, "TOPIX Large70": 1, "TOPIX Mid400": 2, "TOPIX Small 1": 3, "TOPIX Small 2": 4}.get(str(r[9]).strip(), 5)
-    out[code] = [name, MARKET.get(r[3], ""), reading(name), size]
+    out[code] = [name, MARKET.get(r[3], ""), with_aliases(code, reading(name)), size]
 dest = pathlib.Path(__file__).resolve().parent.parent / "data" / "jp-stocks.json"
 dest.write_text(json.dumps({"asof": str(rows[0][0]), "list": out}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 print(f"{len(out)} 銘柄（{rows[0][0]} 時点）を {dest} に書き出しました")

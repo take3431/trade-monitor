@@ -7,7 +7,7 @@ export const isUS = (code) => /^[A-Z]/.test(code);
 export const JP_RE = /^[0-9][0-9A-Z]{3}$/;
 export const US_RE = /^[A-Z][A-Z0-9]{0,5}(-[A-Z])?$/;
 
-import { US, US_TOP } from './us-names.js?v=20261125143359';
+import { US, US_TOP } from './us-names.js?v=20261125143935';
 
 export const US_NAMES = Object.fromEntries(Object.entries(US).map(([k, v]) => [k, v[0]]));
 
@@ -52,7 +52,7 @@ function buildIndex() {
 export function loadDict() {
   if (jp) return Promise.resolve(jp);
   if (!jpLoading) {
-    jpLoading = fetch('data/jp-stocks.json?v=20261125143359')
+    jpLoading = fetch('data/jp-stocks.json?v=20261125143935')
       .then((r) => r.json())
       .then((j) => { jp = j.list; buildIndex(); return jp; })
       .catch(() => { jpLoading = null; return {}; });
