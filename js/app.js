@@ -161,6 +161,7 @@ async function present(item, entries, seq, loading = false) {
   if (seq !== st.seq) return;
   back.root.classList.add('active');
   stages[front].root.classList.remove('active');
+  back.fitTitle();
   front = 1 - front;
   updateStatus();
 }
@@ -261,7 +262,7 @@ function updateStatus(now = Date.now()) {
   $('statusText').textContent = `${m === 'US' ? '米国' : '東証'}・${ph.open ? `接続中（${ph.label}）` : ph.label}`;
   const e = stages[front].entries?.[settings.leftTf] || stages[front].entries?.[settings.rightTf];
   const ns = D.netStats();
-  $('updatedAt').textContent = ns.active ? '通信中…' : ns.lastAt ? `最終通信 ${M.fmtStamp(ns.lastAt, now)}` : '通信なし';
+  $('updatedAt').textContent = ns.active ? '通信中…' : ns.lastAt ? `最終通信 ${M.fmtStamp(ns.lastAt, now)}` : '';
   const errEl = $('errText');
   errEl.hidden = !err;
   if (err) {
@@ -738,3 +739,5 @@ updateStatus();
 renderCountdown();
 setInterval(tick, 1000);
 keepAwake();
+// 画面の向き・大きさが変わったら銘柄名の文字サイズを調整し直す
+window.addEventListener('resize', () => stages.forEach((s) => s.fitTitle()));

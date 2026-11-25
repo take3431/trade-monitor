@@ -269,7 +269,10 @@ tr.drag-placeholder td > * { visibility: hidden; }
 .sym-quote { display: inline-flex; align-items: baseline; gap: .7rem; margin-left: .6rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .q-price { font-size: 1.6rem; font-weight: 700; }
 .q-chg { font-size: 1.15rem; font-weight: 600; }
-.sym-title { flex-wrap: wrap; row-gap: .1rem; }
+.sym-id { min-width: 0; }
+.sym-title { flex-wrap: nowrap; overflow: hidden; }
+.sym-code, .sym-quote { flex: none; }
+.sym-name { min-width: 0; }
 
 /* ===== 通信状況 ===== */
 .status { cursor: pointer; border-radius: 8px; padding: .25rem .5rem; margin-left: -.5rem; }

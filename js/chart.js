@@ -200,7 +200,7 @@ const STAGE_HTML = `
       <div class="sym-title"><span class="sym-code"></span><span class="sym-name"></span>
         <span class="sym-quote"><span class="q-price"></span><span class="q-chg"></span></span></div>
     </div>
-    <div class="sym-meta"><div class="sym-pos"></div><div class="sym-time"></div><div class="sym-fetch"></div></div>
+    <div class="sym-meta"><div class="sym-pos"></div><div class="sym-time"></div></div>
   </section>
   <section class="charts">
     ${['L', 'R'].map((s) => `
@@ -218,10 +218,23 @@ export class Stage {
     const $ = (s) => root.querySelector(s);
     this.el = {
       code: $('.sym-code'), name: $('.sym-name'), pos: $('.sym-pos'),
-      time: $('.sym-time'), fetch: $('.sym-fetch'), qPrice: $('.q-price'), qChg: $('.q-chg'), quote: $('.sym-quote'),
+      time: $('.sym-time'), title: $('.sym-title'), qPrice: $('.q-price'), qChg: $('.q-chg'), quote: $('.sym-quote'),
     };
     this.panes = [...root.querySelectorAll('.chart-card')].map((c) => new Pane(c));
     this.code = null;
+  }
+
+  // 銘柄名が長くて株価と重なる場合だけ、銘柄名の文字を小さくする（最小で元の55%）
+  fitTitle() {
+    const { title, name } = this.el;
+    name.style.fontSize = '';
+    if (!title.clientWidth) return; // 非表示中は測れないので、表示時に再調整
+    let scale = 1;
+    const over = () => title.scrollWidth > title.clientWidth + 1 || name.scrollWidth > name.clientWidth + 1;
+    while (over() && scale > 0.55) {
+      scale -= 0.05;
+      name.style.fontSize = `${scale.toFixed(2)}em`;
+    }
   }
 
   build(ind, colors) {
@@ -256,9 +269,9 @@ export class Stage {
     const last = entries[settings.leftTf] || entries[settings.rightTf];
     const us = /^[A-Z]/.test(item.code);
     const asOf = last?.meta?.time ? last.meta.time * 1000 : last?.fetchedAt ? last.fetchedAt - (us ? 0 : 20 * 60e3) : 0;
-    e.time.textContent = asOf ? `${fmtStamp(asOf)} 時点のデータ${us ? '（日本時間）' : ''}` : '';
-    e.fetch.textContent = last?.fetchedAt ? `${fmtStamp(last.fetchedAt)} に取得` : (loading ? '取得中…' : '');
+    e.time.textContent = asOf ? fmtStamp(asOf) : '';
     this.panes.forEach((p) => { p.exch = us ? 'US' : 'TSE'; });
+    this.fitTitle();
     const label = `${item.code} ${item.name || ''}`.trim();
     this.panes[0].setData(entries[settings.leftTf], settings.leftTf, label, settings.leftBars, keepRange, loading);
     this.panes[1].setData(entries[settings.rightTf], settings.rightTf, label, settings.rightBars, keepRange, loading);
