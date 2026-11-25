@@ -98,8 +98,8 @@ body.in-settings .settings-only { display: flex; }
 .empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; font-size: 1.1rem; }
 
 .sym-head {
-  flex: none; display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 1.5rem;
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: .7rem 1.2rem;
+  flex: none; display: grid; grid-template-columns: 1fr; align-items: center; gap: 1.5rem;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: .5rem 1.2rem;
 }
 .sym-title { display: flex; align-items: baseline; gap: .7rem; font-size: 1.85rem; font-weight: 700; line-height: 1.2; min-width: 0; }
 .sym-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

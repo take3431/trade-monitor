@@ -25,12 +25,14 @@ export const TF = {
     periods: [[36, '3年'], [60, '5年'], [120, '10年'], [0, '全期間']], def: 120, short: '1M' },
 };
 
-const cfg = { proxy: BUILTIN_PROXIES[0], fallback: true, demo: false, ttlMs: 120e3, timeout: 12000 };
+const cfg = { proxy: BUILTIN_PROXIES[0], fallback: true, demo: false, ttlMs: 120e3, timeout: 15000 };
 export function configure(o) { Object.assign(cfg, o); }
 export function isDemo() { return cfg.demo; }
 
 /* ---------------- HTTP ---------------- */
 let preferred = null;
+// APIキー必須などで拒否されたプロキシは30分間使わない（無駄な待ち時間を減らす）
+const benched = new Map();
 
 function proxied(tpl, url) {
   if (tpl === 'direct') return url;
@@ -44,6 +46,9 @@ async function fetchJson(url) {
   if (cfg.proxy) list.push(cfg.proxy.trim());
   if (cfg.fallback || !list.length) for (const p of BUILTIN_PROXIES) if (!list.includes(p)) list.push(p);
   if (preferred && list.includes(preferred)) list = [preferred, ...list.filter((p) => p !== preferred)];
+  const now = Date.now();
+  const usable = list.filter((p) => !(benched.get(p) > now));
+  if (usable.length) list = usable;
   const reasons = [];
   for (const tpl of list) {
     const ctrl = new AbortController();
@@ -53,6 +58,7 @@ async function fetchJson(url) {
     try {
       const r = await fetch(proxied(tpl, url), { signal: ctrl.signal, cache: 'no-store' });
       if (!r.ok) {
+        if (r.status === 401 || r.status === 403) benched.set(tpl, Date.now() + 30 * 60e3);
         const why = r.status === 401 || r.status === 403 ? 'APIキー必要/拒否' : r.status === 429 ? '回数制限' : `HTTP ${r.status}`;
         throw new Error(why);
       }
@@ -284,8 +290,14 @@ async function fetchSeries(code, tf) {
       parsed = demoSeries(code, tf);
     } else {
       const t = TF[tf];
-      const url = `${YH1}/v8/finance/chart/${encodeURIComponent(code)}.T?interval=${t.interval}&range=${t.range}&includePrePost=false`;
-      parsed = parseChart(await fetchJson(url), tf);
+      const path = `/v8/finance/chart/${encodeURIComponent(code)}.T?interval=${t.interval}&range=${t.range}&includePrePost=false`;
+      // Yahoo の窓口 query1 / query2 を交互に試す（片方が混雑・制限中でももう片方で取れることがある）
+      let json;
+      try { json = await fetchJson(YH1 + path); } catch (e1) {
+        await new Promise((r) => setTimeout(r, 800));
+        try { json = await fetchJson(YH2 + path); } catch (e2) { throw new Error(`${e1.message} ／ 予備窓口: ${e2.message}`); }
+      }
+      parsed = parseChart(json, tf);
     }
     const entry = { ...parsed, fetchedAt: Date.now() };
     await putCached(code, tf, entry);
@@ -298,20 +310,25 @@ async function fetchSeries(code, tf) {
 
 // 指定銘柄の必要な足種をまとめて取得（キャッシュ有効なら API を叩かない）
 // 戻り値: { entries: {tf: entry|null}, fetched: bool, error: Error|null }
-export async function loadSet(code, tfs, { force = false } = {}) {
+export async function loadSet(code, tfs, { force = false, onEntry = null } = {}) {
   const entries = {};
   let fetched = false, error = null;
-  await Promise.all(tfs.map(async (tf) => {
+  // 公開プロキシは同時アクセスに弱いため、足種ごとに1本ずつ順番に取得する
+  let requested = false;
+  for (const tf of tfs) {
     const cached = await getCached(code, tf);
     entries[tf] = cached;
-    if (!force && cached && isFresh(cached.fetchedAt, ttlFor(tf))) return;
+    if (!force && cached && isFresh(cached.fetchedAt, ttlFor(tf))) continue;
+    if (requested) await new Promise((r) => setTimeout(r, 600));
+    requested = true;
     try {
       entries[tf] = await fetchSeries(code, tf);
       fetched = true;
+      if (onEntry) onEntry({ ...entries });
     } catch (e) {
       error = e;
     }
-  }));
+  }
   return { entries, fetched, error };
 }
 

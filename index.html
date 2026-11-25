@@ -73,7 +73,6 @@
     <div class="list-head">
       <h2>登録銘柄一覧 <span id="listCount" class="muted"></span></h2>
       <div class="list-actions">
-        <button class="btn" id="btnRefreshList"><svg class="ico"><use href="#i-refresh"/></svg><span>株価更新</span></button>
         <button class="btn" id="btnAdd"><svg class="ico"><use href="#i-plus"/></svg><span>新規登録</span></button>
       </div>
     </div>
@@ -81,7 +80,6 @@
       <table class="list">
         <thead><tr>
           <th class="c-no">通番</th><th class="c-code">コード</th><th class="c-name">銘柄名</th>
-          <th class="r">株価</th><th class="r">前日比</th><th class="r">騰落率</th>
           <th class="c-sw">表示対象</th><th class="c-del"></th>
         </tr></thead>
         <tbody id="listBody"></tbody>
@@ -132,7 +130,7 @@
         <label class="col">CORSプロキシURL<input type="url" id="inpProxy" placeholder="https://xxxx.workers.dev/?url={url}" autocomplete="off" spellcheck="false"></label>
         <label class="row">失敗時に予備プロキシを使う<span class="switch"><input type="checkbox" id="chkFallback"><i></i></span></label>
         <label class="row">デモデータで表示<span class="switch"><input type="checkbox" id="chkDemo"><i></i></span></label>
-        <div class="row"><span class="muted small">保存済みの株価・チャートを消去</span><button class="btn sm danger" id="btnClearCache">キャッシュ消去</button></div>
+        <div class="row"><span class="muted small">保存済みのチャートデータを消去</span><button class="btn sm danger" id="btnClearCache">キャッシュ消去</button></div>
       </section>
       <p class="muted small attribution">Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a> Lightweight Charts™ ／ データ: Yahoo Finance（約20分遅延）</p>
     </div>

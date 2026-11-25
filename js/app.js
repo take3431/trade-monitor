@@ -1,6 +1,6 @@
 import * as M from './market.js';
 import * as D from './data.js';
-import { Stage, themeColors, fmtPrice, fmtSigned, dirClass } from './chart.js';
+import { Stage, themeColors } from './chart.js';
 import { lookupName, searchLocal } from './names.js';
 
 const MAX_SYMBOLS = 120;
@@ -13,7 +13,7 @@ const DEFAULTS = {
   leftTf: '1d', rightTf: '1mo', leftBars: 126, rightBars: 120,
   ind: { ma: true, bb: false, vol: true },
   theme: 'dark', colorMode: 'jp', font: 'm', wakeLock: true,
-  cacheMin: 2, prefetchSec: 15,
+  cacheMin: 2, prefetchSec: 25,
   proxy: D.BUILTIN_PROXIES[0], fallback: true, demo: false,
 };
 const DEFAULT_LIST = [
@@ -42,7 +42,7 @@ let front = 0;
 
 const persistState = () => save(KEY.state, { code: st.code, paused: st.paused });
 const saveList = () => save(KEY.list, list);
-const neededTfs = () => [...new Set(['1d', settings.leftTf, settings.rightTf])];
+const neededTfs = () => [...new Set([settings.leftTf, settings.rightTf])];
 const ttlMs = () => settings.cacheMin * 60e3;
 
 /* ---------------- 設定の反映 ---------------- */
@@ -87,10 +87,11 @@ function showEmpty(empty) {
 }
 
 // 銘柄を表示。キャッシュがあれば非表示レイヤーに描画→即切替、その後必要なら最新データ取得。
-async function show(code, { nav = false, force = false } = {}) {
+async function show(code, { nav = false, force = false, retry = false } = {}) {
   const item = list.find((x) => x.code === code);
   if (!item) { showEmpty(true); return; }
   showEmpty(false);
+  if (!retry) st.retry = null;
   const seq = ++st.seq;
   st.code = code;
   persistState();
@@ -101,12 +102,18 @@ async function show(code, { nav = false, force = false } = {}) {
   const cached = await D.cachedSet(code, tfs);
   if (seq !== st.seq) return;
   const hasCache = tfs.some((tf) => cached[tf]);
-  if (hasCache && !isSame) await present(item, cached, seq, false);
+  if (!isSame) await present(item, cached, seq, !hasCache); // 未取得なら銘柄名と「読込中」を先に表示
 
   if (nav) { await new Promise((r) => setTimeout(r, NAV_FETCH_DELAY)); if (seq !== st.seq) return; }
 
   setLoading(true);
-  const res = await D.loadSet(code, tfs, { force });
+  const res = await D.loadSet(code, tfs, {
+    force,
+    // 片方のチャートが届いた時点で先に表示する
+    onEntry: (partial) => {
+      if (seq === st.seq && stages[front].code === code) render(stages[front], item, partial, true, true);
+    },
+  });
   setLoading(false);
   if (seq !== st.seq) return;
   st.lastError = res.error;
@@ -116,15 +123,23 @@ async function show(code, { nav = false, force = false } = {}) {
     else await present(item, res.entries, seq, false);
   }
   updateStatus();
+  // 一部のチャートが取れなかったときは、巡回を待たずに少し後で再挑戦
+  if (res.error && !(st.retry?.code === code && st.retry.n >= 3)) {
+    const n = st.retry?.code === code ? st.retry.n + 1 : 1;
+    st.retry = { code, n };
+    setTimeout(() => { if (st.code === code && seq === st.seq) show(code, { retry: true }); }, 6000 * n);
+  } else if (!res.error) {
+    st.retry = null;
+  }
 }
 
-function render(stage, item, entries, keepRange) {
-  stage.render(item, entries, D.quoteFrom(entries['1d']) || D.getQuote(item.code), settings, { pos: posText(item.code), keepRange });
+function render(stage, item, entries, keepRange, loading = false) {
+  stage.render(item, entries, settings, { pos: posText(item.code), keepRange, loading });
 }
 
-async function present(item, entries, seq) {
+async function present(item, entries, seq, loading = false) {
   const back = stages[1 - front];
-  render(back, item, entries, false);
+  render(back, item, entries, false, loading);
   await frames(2); // 非表示レイヤーで描画完了を待ってから切替
   if (seq !== st.seq) return;
   back.root.classList.add('active');
@@ -183,7 +198,7 @@ function updateStatus(now = Date.now()) {
   const err = st.lastError;
   dot.className = `dot ${err ? 'err' : ph.open ? 'ok' : 'closed'}${loading ? ' busy' : ''}`;
   $('statusText').textContent = `東証・${ph.open ? `接続中（${ph.label}）` : ph.label}`;
-  const e = stages[front].entries?.['1d'] || stages[front].entries?.[settings.leftTf];
+  const e = stages[front].entries?.[settings.leftTf] || stages[front].entries?.[settings.rightTf];
   $('updatedAt').textContent = e?.fetchedAt ? `${M.fmtStamp(e.fetchedAt, now)} 更新` : '';
   const errEl = $('errText');
   errEl.hidden = !err;
@@ -235,7 +250,6 @@ function closeSettings() {
   readSettings();
   save(KEY.settings, settings);
   saveList();
-  listRefresh.cancel = true;
   applyLook();
   applyData();
   const next = JSON.stringify({ tf: [settings.leftTf, settings.rightTf, settings.leftBars, settings.rightBars], ind: settings.ind, t: settings.theme, c: settings.colorMode, d: settings.demo, f: settings.font });
@@ -327,36 +341,17 @@ function readSettings() {
 }
 
 /* ---------------- 銘柄一覧 ---------------- */
-function quoteCells(code) {
-  const q = D.getQuote(code);
-  const d = dirClass(q?.chg);
-  return `<td class="r num c-price">${fmtPrice(q?.price)}</td>
-    <td class="r num ${d}">${q ? fmtSigned(q.chg) : '—'}</td>
-    <td class="r num ${d}">${q ? `${fmtSigned(q.pct, 2)}%` : '—'}</td>`;
-}
-
 function renderList() {
   $('listCount').textContent = `(${list.length}/${MAX_SYMBOLS})`;
   $('listBody').innerHTML = list.map((x, i) => `
     <tr data-code="${esc(x.code)}">
       <td class="c-no"><span class="grip" title="ドラッグで並び替え"><svg class="ico"><use href="#i-grip"/></svg></span><span class="no">${String(i + 1).padStart(2, '0')}</span></td>
       <td class="c-code num">${esc(x.code)}</td>
-      <td class="c-name"><button class="link rename">${esc(x.name || D.getQuote(x.code)?.name || '（名称未設定）')}</button></td>
-      ${quoteCells(x.code)}
+      <td class="c-name"><button class="link rename">${esc(x.name || '（名称未設定）')}</button></td>
       <td class="c-sw"><label class="switch"><input type="checkbox" class="toggle" ${x.enabled ? 'checked' : ''}><i></i></label></td>
       <td class="c-del"><button class="icon-btn danger del" aria-label="削除"><svg class="ico"><use href="#i-trash"/></svg></button></td>
     </tr>`).join('');
   $('btnAdd').disabled = list.length >= MAX_SYMBOLS;
-}
-
-function updateRowQuote(code) {
-  const tr = $('listBody').querySelector(`tr[data-code="${CSS.escape(code)}"]`);
-  if (!tr) return;
-  const tds = tr.querySelectorAll('td');
-  const tmp = document.createElement('tbody');
-  tmp.innerHTML = `<tr>${quoteCells(code)}</tr>`;
-  const n = tmp.querySelectorAll('td');
-  [3, 4, 5].forEach((idx, k) => tds[idx].replaceWith(n[k]));
 }
 
 function renumber() {
@@ -442,27 +437,6 @@ $('listBody').addEventListener('click', (e) => {
   body.addEventListener('pointercancel', end);
 })();
 
-// 一覧の株価更新（APIに負荷をかけないよう1件ずつ間隔をあけ、キャッシュ有効な銘柄は通信しない）
-const listRefresh = { running: false, cancel: false };
-$('btnRefreshList').addEventListener('click', async () => {
-  if (listRefresh.running) { listRefresh.cancel = true; return; }
-  listRefresh.running = true;
-  listRefresh.cancel = false;
-  const btn = $('btnRefreshList').querySelector('span');
-  const codes = list.map((x) => x.code);
-  let errors = 0;
-  for (let i = 0; i < codes.length && !listRefresh.cancel; i++) {
-    btn.textContent = `更新中 ${i + 1}/${codes.length}（停止）`;
-    const r = await D.loadSet(codes[i], ['1d']);
-    if (r.error) errors++;
-    updateRowQuote(codes[i]);
-    if (r.fetched) await new Promise((res) => setTimeout(res, 700));
-  }
-  btn.textContent = '株価更新';
-  listRefresh.running = false;
-  if (errors) toast(`${errors}件の取得に失敗しました（前回値を表示）`);
-});
-
 /* ---------------- 新規登録ダイアログ ---------------- */
 const dlg = $('addDialog');
 const CODE_RE = /^[0-9][0-9A-Z]{3}$/;
@@ -497,7 +471,7 @@ async function doSearch() {
     const qt = D.quoteFrom(r.entries['1d']);
     if (qt) {
       if (!$('addName').value) $('addName').value = qt.name;
-      msg.textContent = `確認OK：現在値 ${fmtPrice(qt.price)}円`;
+      msg.textContent = '確認OK：チャートデータを取得できました';
     } else {
       msg.textContent = r.error ? `確認できませんでした（${r.error.message}）。このまま登録もできます。` : '該当データがありません';
     }

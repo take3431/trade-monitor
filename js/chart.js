@@ -134,7 +134,7 @@ class Pane {
     this.code = null;
   }
 
-  setData(entry, tf, label, visibleBars, keepRange) {
+  setData(entry, tf, label, visibleBars, keepRange, loading = false) {
     const t = TF[tf];
     this.titleEl.textContent = t.title;
     const raw = entry?.bars || [];
@@ -143,6 +143,7 @@ class Pane {
     this.label = `${label}, ${t.short}, TSE`;
     this.maLen = t.ma;
     this.msg.hidden = bars.length > 0;
+    this.msg.textContent = loading ? 'チャートデータ読込中…' : 'チャートデータ未取得（自動で再取得します）';
     this.chart.applyOptions({ timeScale: { timeVisible: tf === '5m', secondsVisible: false } });
 
     const s = this.s;
@@ -162,7 +163,7 @@ class Pane {
       s.bbU.setData(b.up); s.bbM.setData(b.mid); s.bbL.setData(b.lo);
     }
 
-    const sameView = keepRange && this.tf === tf && this.code === label;
+    const sameView = keepRange && this.hadBars && this.tf === tf && this.code === label;
     if (!sameView && bars.length) {
       const n = bars.length;
       if (visibleBars > 0 && n > visibleBars) this.chart.timeScale().setVisibleLogicalRange({ from: n - visibleBars, to: n + 2 });
@@ -170,6 +171,7 @@ class Pane {
     }
     this.tf = tf;
     this.code = label;
+    this.hadBars = bars.length > 0;
     this.updateLegend(null);
   }
 
@@ -196,15 +198,7 @@ const STAGE_HTML = `
   <section class="sym-head">
     <div class="sym-id">
       <div class="sym-title"><span class="sym-code"></span><span class="sym-name"></span></div>
-      <div class="sym-sub"><span class="sym-market"></span><span class="sym-pos"></span></div>
-    </div>
-    <div class="sym-price">
-      <div class="lbl">現在値 <span class="sym-time"></span></div>
-      <div class="val"><span class="num"></span><span class="unit">円</span></div>
-    </div>
-    <div class="sym-chg">
-      <div class="lbl">前日比・騰落率</div>
-      <div class="val"></div>
+      <div class="sym-sub"><span class="sym-market"></span><span class="sym-pos"></span><span class="sym-time"></span></div>
     </div>
   </section>
   <section class="charts">
@@ -223,7 +217,7 @@ export class Stage {
     const $ = (s) => root.querySelector(s);
     this.el = {
       code: $('.sym-code'), name: $('.sym-name'), market: $('.sym-market'), pos: $('.sym-pos'),
-      time: $('.sym-time'), num: $('.sym-price .num'), price: $('.sym-price .val'), chg: $('.sym-chg .val'),
+      time: $('.sym-time'),
     };
     this.panes = [...root.querySelectorAll('.chart-card')].map((c) => new Pane(c));
     this.code = null;
@@ -234,22 +228,18 @@ export class Stage {
     this.code = null;
   }
 
-  render(item, entries, quote, settings, { pos = '', keepRange = false } = {}) {
+  render(item, entries, settings, { pos = '', keepRange = false, loading = false } = {}) {
     const e = this.el;
     this.code = item.code;
     this.entries = entries;
     e.code.textContent = item.code;
-    e.name.textContent = item.name || quote?.name || '';
+    e.name.textContent = item.name || '';
     e.market.textContent = `[${item.market || '東証'}]`;
     e.pos.textContent = pos;
-    const d = dirClass(quote?.chg);
-    e.num.textContent = fmtPrice(quote?.price);
-    e.price.className = `val ${d}`;
-    e.chg.className = `val ${d}`;
-    e.chg.textContent = quote ? `${fmtSigned(quote.chg)}円 (${fmtSigned(quote.pct, 2)}%)` : '—';
-    e.time.textContent = quote?.time ? `(${fmtStamp(quote.time)})` : '';
+    const last = entries[settings.leftTf] || entries[settings.rightTf];
+    e.time.textContent = last?.fetchedAt ? `データ取得 ${fmtStamp(last.fetchedAt)}` : '';
     const label = `${item.code} ${item.name || ''}`.trim();
-    this.panes[0].setData(entries[settings.leftTf], settings.leftTf, label, settings.leftBars, keepRange);
-    this.panes[1].setData(entries[settings.rightTf], settings.rightTf, label, settings.rightBars, keepRange);
+    this.panes[0].setData(entries[settings.leftTf], settings.leftTf, label, settings.leftBars, keepRange, loading);
+    this.panes[1].setData(entries[settings.rightTf], settings.rightTf, label, settings.rightBars, keepRange, loading);
   }
 }
