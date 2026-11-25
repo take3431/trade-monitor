@@ -9,8 +9,8 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261125152443';
-import { yahooSymbol, marketOfCode } from './names.js?v=20261125152443';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261125154317';
+import { yahooSymbol, marketOfCode } from './names.js?v=20261125154317';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = yahooSymbol;
@@ -32,7 +32,9 @@ export const TF = {
 
 const cfg = {
   proxy: '', fallback: true, demo: false, ttlMs: 120e3, timeout: 15000,
-  approxOpen: false,          // true：当日の始値を「最初の1分の値」で近似（表示対象が多いとき）
+  approxOpen: false,          // true：当日の始値を近似する（表示対象が多いとき。openMode で取り方を決める）
+  openMode: 'exact',          // 始値：exact＝1銘柄ずつ正確に ／ 1m・5m・15m＝最初の1分・5分・15分の値 ／ prev＝前日の終値で代用（通信なし）
+  fullDays: 150,              // 10年分の定期の取り直しの間隔（日。銘柄ごとに最大59日ずらす）
   liveAhead: 5,               // 取引時間中、まとめて取得に含めるのは「この先この件数以内に表示する銘柄」だけ
   upcoming: () => [],         // この先表示される銘柄（まとめて取得の対象を選ぶのに使う）
 };
@@ -678,7 +680,7 @@ function fullDue(code, b, now = Date.now()) {
   if (!b?.fullAt) return true;
   let h = 0;
   for (const ch of code) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return now - b.fullAt > (150 + (h % 60)) * 86400e3;
+  return now - b.fullAt > (cfg.fullDays + (h % 60)) * 86400e3;
 }
 const needsFull = (b, code) => !b?.bars?.length || fullDue(code, b);
 
@@ -700,7 +702,7 @@ function mergeSpark(base, x, approxOpen, code) {
   if (price == null) return { need: 'gap' };
   let open;
   if (lastDay === today) open = last[1];
-  else if (approxOpen) open = openCache.get(`${x.meta.symbol}|${today}`);
+  else if (approxOpen) open = cfg.openMode === 'prev' ? last[4] : openCache.get(`${x.meta.symbol}|${today}`);
   if (open == null) return { need: 'open' };
   const high = Math.max(m.regularMarketDayHigh ?? price, open, price);
   const low = Math.min(m.regularMarketDayLow ?? price, open, price);
@@ -718,7 +720,8 @@ function mergeSpark(base, x, approxOpen, code) {
 // 近似の始値：当日の1分足の最初の値（まとめて1回）
 async function fetchApproxOpens(codes, prio) {
   if (!codes.length) return;
-  const json = await fetchYahoo(`/v7/finance/spark?symbols=${codes.map((c) => enc(ySym(c))).join(',')}&range=1d&interval=1m`,
+  const iv = ['1m', '5m', '15m'].includes(cfg.openMode) ? cfg.openMode : '1m';
+  const json = await fetchYahoo(`/v7/finance/spark?symbols=${codes.map((c) => enc(ySym(c))).join(',')}&range=1d&interval=${iv}`,
     { code: `${codes.length}銘柄`, prio, what: '当日の始値（近似）' }, (j) => j && j.spark);
   for (const [sym, x] of sparkResults(json)) {
     const first = (x.indicators?.quote?.[0]?.close || []).find((v) => v != null);

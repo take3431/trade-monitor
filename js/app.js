@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261125152443';
-import * as D from './data.js?v=20261125152443';
-import { Stage, themeColors } from './chart.js?v=20261125152443';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125152443';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125152443';
+import * as M from './market.js?v=20261125154317';
+import * as D from './data.js?v=20261125154317';
+import { Stage, themeColors } from './chart.js?v=20261125154317';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125154317';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125154317';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -17,7 +17,7 @@ const DEFAULTS = {
   alertPopup: true, alertSound: true, alertSec: 10,
 };
 // 画面に出さない固定値
-const CACHE_MIN = 2;      // 場中のキャッシュ有効時間（分）
+const CACHE_MIN = 2;      // 場中のキャッシュ有効時間（分）の基本。銘柄数・切り替え間隔に応じて自動で延ばす（dataPlan）
 const PREFETCH_SEC = 30;  // 次の銘柄を何秒前に取得するか
 const DEMO = new URLSearchParams(location.search).has('demo'); // 動作確認用（URL に ?demo を付けたときだけ）
 const DEFAULT_LIST = [
@@ -109,16 +109,63 @@ function applyLook() {
 }
 // 表示対象がこの数を超えたら、当日の始値を近似にして通信回数を抑える（1日300回の上限に収めるため）
 const EXACT_OPEN_MAX = 50; // 1銘柄ずつ始値を取ると、それだけで1日の通信が銘柄数ぶん増えるため
-const approxMode = () => enabledCount() > EXACT_OPEN_MAX;
+
+/* ---------------- データ取得の計画（通信量を1日約3.5MB以内に収める） ----------------
+   表示対象の銘柄数と切り替え間隔から、取引時間中の更新間隔・始値の取り方・定期の取り直し間隔を決める。
+   200銘柄までは今までどおり（2分ごと・始値は1分の値）。それを超えると段階的に粗くする。
+   切り替えが速い（10秒など）ときも、通信量が増えすぎないよう更新間隔を延ばす（切り替えと通信は切り離す）。
+   通信量の見積もり（実測値。応答＋要求の見出し込み）：
+     まとめて更新 1銘柄あたり1.23KB ＋ 1回あたり1.4KB ／ 1銘柄ずつの始値 2.4KB
+     始値のまとめて取得 1銘柄あたり 1分足6.6KB・5分足2.4KB・15分足1.7KB ／ 10年分 158KB */
+const DATA_TARGET_KB = 3500; // 始値の取り方を選ぶときの目標（200銘柄までは4,000KB）
+const DATA_LIMIT_KB = 4000;  // これを超えるときだけ、取引時間中の更新間隔を延ばす
+const LIVE_MIN = 330; // 東証のデータが動く時間（9:20〜11:50・12:50〜15:50）
+const TIERS = [ // [銘柄数まで, 更新間隔（分）, 始値の取り方の候補（良い順）, 定期の取り直し（日）]
+  [50, 2, ['exact'], 150],
+  [200, 2, ['1m', '5m', '15m', 'prev'], 150],
+  [400, 3, ['5m', '15m', 'prev'], 300],
+  [700, 4, ['15m', 'prev'], 300],
+  [Infinity, 5, ['15m', 'prev'], 300],
+];
+const OPEN_KB = { exact: 2.4, '1m': 6.6, '5m': 2.4, '15m': 1.7, prev: 0 };
+function dataPlan(n = enabledCount(), interval = settings.interval) {
+  const [, tierMin, modes, fullDays] = TIERS.find(([max]) => n <= max);
+  const displays = (LIVE_MIN * 60) / interval;        // 取引時間中に表示する回数
+  const shown = Math.min(n, displays);                // 取引時間中に1回以上表示する銘柄の数
+  const fixed = (mode) => (mode === 'exact' ? n * OPEN_KB.exact : shown * OPEN_KB[mode] + (shown / 20) * 1.4)
+    + n * 1.3 + (n / fullDays) * 158;                // 始値＋引け後の更新＋定期の取り直し
+  const liveKB = (ttl) => { const r = Math.min(displays, (n * LIVE_MIN) / ttl); return r * 1.23 + Math.max(LIVE_MIN / ttl, r / 20) * 1.4; };
+  // 始値はなるべく良い取り方で。目標に収まらなければ粗くし、上限も超えるときだけ更新間隔を延ばす
+  const target = n <= 200 ? DATA_LIMIT_KB : DATA_TARGET_KB;
+  let mode = modes[modes.length - 1];
+  for (const m of modes) if (fixed(m) + liveKB(tierMin) <= target) { mode = m; break; }
+  let ttl = tierMin;
+  while (fixed(mode) + liveKB(ttl) > DATA_LIMIT_KB && ttl < LIVE_MIN) ttl = Math.ceil(ttl * 1.25);
+  return { ttlMin: ttl, openMode: mode, fullDays, estKB: Math.round(fixed(mode) + liveKB(ttl)) };
+}
+const approxMode = () => dataPlan().openMode !== 'exact';
+const OPEN_LABEL = { exact: '正確（1銘柄ずつ）', '1m': '最初の1分の値', '5m': '最初の5分の値', '15m': '最初の15分の値', prev: '前日の終値で代用' };
 function applyData() {
+  const plan = dataPlan();
+  renderPlan(plan);
   D.configure({
-    demo: DEMO, ttlMs: CACHE_MIN * 60e3,
-    approxOpen: approxMode(),
+    demo: DEMO, ttlMs: plan.ttlMin * 60e3,
+    approxOpen: plan.openMode !== 'exact',
+    openMode: plan.openMode,
+    fullDays: plan.fullDays,
     // 取引時間中にまとめて取得する範囲：2分（データの有効時間）以内に表示する銘柄の数＋1
-    liveAhead: Math.min(20, Math.ceil((CACHE_MIN * 60) / settings.interval) + 1),
+    liveAhead: Math.min(20, Math.ceil((plan.ttlMin * 60) / settings.interval) + 1),
     // まとめて取得の対象：この先表示される20銘柄（表示中の銘柄を含む）
     upcoming: () => [st.code, ...upcomingFrom(20)].filter(Boolean),
   });
+}
+// 通信状況画面の「決まり」に、今の計画を表示する
+function renderPlan(plan) {
+  const n = enabledCount();
+  const set = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
+  set('specLive', `取引時間中、同じ銘柄は${plan.ttlMin}分ごとに最新化（表示対象${n}銘柄・切り替え${settings.interval}秒に合わせて自動で調整）`);
+  set('specOpen', OPEN_LABEL[plan.openMode]);
+  set('specEst', `約${(plan.estKB / 1000).toFixed(1)}MB（東証・取引日に1日中表示した場合の目安。目標3.5MB・上限4MB）`);
 }
 function rebuildCharts() {
   const c = themeColors();
@@ -326,7 +373,7 @@ function updateStatus(now = Date.now()) {
   const mb = $('modeBadge');
   mb.hidden = !(b.over || approxMode());
   mb.textContent = b.over ? '本日の通信上限' : '始値は近似';
-  mb.title = b.over ? `今日の通信が${b.cap}回に達したため、保存済みのデータで表示しています（明日0時に再開）` : `表示対象が${EXACT_OPEN_MAX}銘柄を超えているため、当日の始値は最初の1分の値で近似しています`;
+  mb.title = b.over ? `今日の通信が${b.cap}回に達したため、保存済みのデータで表示しています（明日0時に再開）` : `表示対象が${EXACT_OPEN_MAX}銘柄を超えているため、当日の始値は「${OPEN_LABEL[dataPlan().openMode]}」で近似しています`;
   mb.classList.toggle('warn', b.over);
   const errEl = $('errText');
   errEl.hidden = !err || !!err.budget;
