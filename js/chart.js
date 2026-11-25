@@ -197,7 +197,8 @@ class Pane {
 const STAGE_HTML = `
   <section class="sym-head">
     <div class="sym-id">
-      <div class="sym-title"><span class="sym-code"></span><span class="sym-name"></span></div>
+      <div class="sym-title"><span class="sym-code"></span><span class="sym-name"></span>
+        <span class="sym-quote"><span class="q-price"></span><span class="q-chg"></span></span></div>
     </div>
     <div class="sym-meta"><div class="sym-pos"></div><div class="sym-time"></div></div>
   </section>
@@ -217,7 +218,7 @@ export class Stage {
     const $ = (s) => root.querySelector(s);
     this.el = {
       code: $('.sym-code'), name: $('.sym-name'), pos: $('.sym-pos'),
-      time: $('.sym-time'),
+      time: $('.sym-time'), qPrice: $('.q-price'), qChg: $('.q-chg'), quote: $('.sym-quote'),
     };
     this.panes = [...root.querySelectorAll('.chart-card')].map((c) => new Pane(c));
     this.code = null;
@@ -234,6 +235,22 @@ export class Stage {
     this.entries = entries;
     e.code.textContent = item.code;
     e.name.textContent = item.name || '';
+    // 現在値と前日比（日本式：上昇＝赤、下落＝緑。設定で逆にできる）
+    const q = entries.quote;
+    const isUs = /^[A-Z]/.test(item.code);
+    const money = (v) => (isUs
+      ? 'US$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : fmtPrice(v) + '円');
+    const sign = (v) => (v > 0 ? '+' : v < 0 ? '\u2212' : '\u00b1');
+    const signed = (v) => (isUs ? sign(v) + Math.abs(v).toFixed(2) : fmtSigned(v));
+    e.quote.hidden = !q || q.price == null;
+    if (q && q.price != null) {
+      const d = dirClass(q.chg);
+      e.qPrice.textContent = money(q.price);
+      e.qChg.textContent = q.chg == null ? '' : signed(q.chg) + ' (' + fmtSigned(q.pct, 2) + '%)';
+      e.qChg.className = 'q-chg ' + d;
+      e.qPrice.className = 'q-price ' + d;
+    }
     e.pos.textContent = pos;
     // データの時刻：Yahoo が返す最終約定時刻（東証は約20分遅れ）。無ければ取得時刻から遅延分を引く
     const last = entries[settings.leftTf] || entries[settings.rightTf];

@@ -400,6 +400,7 @@ const kindOf = (tf) => (tf === '5m' ? '5m' : 'base');
 export async function cachedSet(code, tfs) {
   const entries = {};
   for (const tf of tfs) entries[tf] = deriveEntry(code, await getStored(code, kindOf(tf)), tf === '5m' ? '1d' : tf);
+  entries.quote = quoteOfBase(await getStored(code, 'base'));
   return entries;
 }
 
@@ -428,6 +429,7 @@ export async function loadSet(code, tfs, { force = false, onEntry = null, prio =
     try {
       const v = kind === 'base' ? await refreshBase(code, prio) : await refreshIntraday(code, prio);
       for (const tf of tfs) if (kindOf(tf) === kind) entries[tf] = deriveEntry(code, v, tf === '5m' ? '1d' : tf);
+      if (kind === 'base') entries.quote = quoteOfBase(v);
       fetched = true;
       if (onEntry) onEntry({ ...entries });
     } catch (e) {
@@ -448,6 +450,22 @@ export function quoteFrom(entry) {
   if (!entry?.bars?.length) return null;
   const last = entry.bars[entry.bars.length - 1];
   return { price: entry.meta?.price ?? last[4], name: entry.meta?.name || '' };
+}
+
+// 現在値・前日比：取得済みの日足から計算する（追加の通信はしない）
+//  現在値 = Yahoo の最新値（無ければ最後の日足の終値）
+//  前日終値 = 最新値と同じ日の足があればその1本前、無ければ最後の足の終値
+function quoteOfBase(base) {
+  const b = base?.bars;
+  if (!b?.length) return null;
+  const last = b[b.length - 1];
+  const price = base.meta?.price ?? last[4];
+  // 最新値の時刻が最後の日足の開始から24時間以内なら「同じ日の足」（米国株は日本と日付がずれるため時刻差で判定）
+  const t = base.meta?.time || last[0];
+  const sameSession = t >= last[0] && t - last[0] < 86400;
+  const prev = sameSession ? b[b.length - 2]?.[4] : last[4];
+  if (price == null || prev == null) return { price, chg: null, pct: null };
+  return { price, chg: price - prev, pct: prev ? ((price - prev) / prev) * 100 : null };
 }
 
 export async function searchRemote(q) {
