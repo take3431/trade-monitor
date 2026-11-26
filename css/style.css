@@ -411,3 +411,5 @@ body.in-settings .alert-stack { top: auto; right: auto; left: calc(1.2rem + env(
 .ov-empty { color: var(--muted); font-size: .9rem; }
 .tag.idx { background: var(--warn); color: #111; }
 .tag.nd { background: var(--danger); color: #fff; }
+.chime-ctl { display: inline-flex; align-items: center; gap: .5rem; flex: none; }
+.chime-test { white-space: nowrap; }

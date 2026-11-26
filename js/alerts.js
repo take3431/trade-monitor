@@ -49,51 +49,76 @@ export function unlockAudio() {
     if (actx.state === 'suspended') actx.resume().catch(() => {});
   } catch { /* 音が使えない端末 */ }
 }
-// 「ピンポーン」を繰り返し鳴らす。sec 秒たつか、stopAlarm() で止まる
-//  音量を上げても割れないよう、最後に音量の山をならす処理（コンプレッサー）を通す
-let alarmTimer = null, alarmUntil = 0, alarmOut = null;
-function chimeOnce(at) {
-  const notes = [[1318.5, 0], [987.8, 0.32]];
-  for (const [f, dt] of notes) {
-    for (const [type, mul, vol] of [['triangle', 1, 0.9], ['sine', 2, 0.25], ['sine', 3, 0.1]]) {
+/* 音色（すべてアプリ内で作る。音声ファイルは読み込まない）
+   ・alert：株価アラート。「ピンポーン」を1.6秒ごと（はっきり気づける音）
+   ・jp：日本市場の開始。木琴（マリンバ）のような柔らかい「ポロロン」と上がる3音（ソ・レ・ソ）。2.4秒ごと
+   ・us：米国市場の開始。ホテルのロビーのチャイムのような、余韻のある「キン・コン・カン」と下がる3音（ミ・ド#・ラ）。3.2秒ごと
+   市場の開始の音は、耳に刺さらないよう音量を控えめにし、角の取れた立ち上がりと自然な減衰にしている。 */
+const SOUNDS = {
+  alert: { period: 1.6, gain: 1.6, notes: [[1318.5, 0], [987.8, 0.32]], decay: 1.0, attack: 0.01,
+    partials: [['triangle', 1, 0.9], ['sine', 2, 0.25], ['sine', 3, 0.1]] },
+  // マリンバ風：基音＋4倍音（木の鍵盤らしい響き）を少しだけ。短めの余韻
+  jp: { period: 2.4, gain: 0.9, notes: [[392.0, 0], [587.3, 0.16], [784.0, 0.32]], decay: 1.1, attack: 0.006,
+    partials: [['sine', 1, 0.75], ['sine', 4, 0.12], ['sine', 2, 0.08]] },
+  // チャイム風：三角波＋鐘らしい少しずれた倍音（2.76倍）。長めの余韻
+  us: { period: 3.2, gain: 0.8, notes: [[659.3, 0], [554.4, 0.45], [440.0, 0.9]], decay: 1.9, attack: 0.012,
+    partials: [['triangle', 1, 0.7], ['sine', 2.76, 0.1], ['sine', 2, 0.12]] },
+};
+let alarmTimer = null, alarmUntil = 0, alarmOut = null, alarmKindNow = null;
+function chimeOnce(at, snd) {
+  for (const [f, dt] of snd.notes) {
+    for (const [type, mul, vol] of snd.partials) {
       const o = actx.createOscillator();
       const g = actx.createGain();
       o.type = type;
       o.frequency.value = f * mul;
       const t = at + dt;
       g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 1.0);
+      g.gain.exponentialRampToValueAtTime(vol, t + snd.attack);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + snd.decay);
       o.connect(g).connect(alarmOut);
       o.start(t);
-      o.stop(t + 1.05);
+      o.stop(t + snd.decay + 0.05);
     }
   }
 }
-export function playAlarm(sec = 10) {
+// sec 秒のあいだ繰り返し鳴らす。stopAlarm() で止まる。kind：'alert' | 'jp' | 'us'
+//  音量を上げても割れないよう、最後に音量の山をならす処理（コンプレッサー）を通す
+export function playAlarm(sec = 10, kind = 'alert') {
   unlockAudio();
   if (!actx) return;
   stopAlarm();
+  const snd = SOUNDS[kind] || SOUNDS.alert;
   const comp = actx.createDynamicsCompressor();
   comp.threshold.value = -12; comp.ratio.value = 6;
   const out = actx.createGain();
-  out.gain.value = 1.6;
+  out.gain.value = snd.gain;
   comp.connect(out).connect(actx.destination);
   alarmOut = comp;
+  alarmKindNow = kind;
   alarmUntil = Date.now() + sec * 1000;
-  const period = 1.6; // 秒
   let next = actx.currentTime + 0.05;
   const pump = () => {
-    if (Date.now() >= alarmUntil) { stopAlarm(); return; }
+    // 時間になったら新しい音は出さず、鳴っている音は自然に消えるのを待つ（ぶつ切りにしない）
+    if (Date.now() >= alarmUntil) { finishAlarm(snd.decay + 1); return; }
     // 少し先の分まで予約しておく（画面の処理が重くても途切れないように）
-    while (next < actx.currentTime + 1) { chimeOnce(next); next += period; }
+    while (next < actx.currentTime + 1 && next < actx.currentTime + (alarmUntil - Date.now()) / 1000) { chimeOnce(next, snd); next += snd.period; }
   };
   pump();
   alarmTimer = setInterval(pump, 250);
 }
+function finishAlarm(tailSec) {
+  clearInterval(alarmTimer);
+  alarmTimer = null;
+  alarmKindNow = null;
+  const node = alarmOut;
+  alarmOut = null;
+  if (node) setTimeout(() => { try { node.disconnect(); } catch { /* ignore */ } }, tailSec * 1000);
+}
 export function stopAlarm() {
   clearInterval(alarmTimer);
   alarmTimer = null;
+  alarmKindNow = null;
   if (alarmOut) {
     const node = alarmOut;
     alarmOut = null;
@@ -101,6 +126,7 @@ export function stopAlarm() {
   }
 }
 export const alarmPlaying = () => !!alarmTimer;
+export const alarmKind = () => alarmKindNow;
 
 /* ---------------- 通知カード ---------------- */
 // a = { code, name, target, price, dir: 'up'|'down', at, us }

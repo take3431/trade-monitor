@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261126061236';
-import * as D from './data.js?v=20261126061236';
-import { Stage, themeColors } from './chart.js?v=20261126061236';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261126061236';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261126061236';
+import * as M from './market.js?v=20261126173613';
+import * as D from './data.js?v=20261126173613';
+import { Stage, themeColors } from './chart.js?v=20261126173613';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, alarmKind, showAlertCard, initAlertCards } from './alerts.js?v=20261126173613';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261126173613';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -15,6 +15,7 @@ const DEFAULTS = {
   ind: { ma: true, bb: false, vol: true },
   theme: 'dark', colorMode: 'jp', font: 'm', wakeLock: true,
   alertPopup: true, alertSound: true, alertSec: 10,
+  chimeJP: true, chimeUS: true, chimeSec: 5,
 };
 // 画面に出さない固定値
 const CACHE_MIN = 2;      // 場中のキャッシュ有効時間（分）の基本。銘柄数・切り替え間隔に応じて自動で延ばす（dataPlan）
@@ -58,6 +59,9 @@ function cleanSettings(raw) {
   s.alertPopup = raw.alertPopup !== undefined ? !!raw.alertPopup : DEFAULTS.alertPopup;
   s.alertSound = raw.alertSound !== undefined ? !!raw.alertSound : DEFAULTS.alertSound;
   s.alertSec = int(raw.alertSec, 3, 120, DEFAULTS.alertSec);
+  s.chimeJP = raw.chimeJP !== undefined ? !!raw.chimeJP : DEFAULTS.chimeJP;
+  s.chimeUS = raw.chimeUS !== undefined ? !!raw.chimeUS : DEFAULTS.chimeUS;
+  s.chimeSec = int(raw.chimeSec, 3, 30, DEFAULTS.chimeSec);
   return s;
 }
 function cleanList(raw) {
@@ -365,9 +369,28 @@ function emergencyTick(now) {
   }).catch(() => {}).finally(() => { emergBusy = false; });
 }
 
+/* 市場が開いたら音で知らせる（日本：前場・後場、米国：取引開始。音色は日本と米国で別）。
+   通信は一切しない（端末の時計と休場日の表だけで判断）。同じできごとでは1回だけ。通信役のタブだけが鳴らす。
+   株価アラートが鳴っているときは、そちらを優先して鳴らさない。 */
+const CHIME_KEY = 'tm.chime.v1';
+function chimeTick(now) {
+  const evs = M.marketOpenEvents(now);
+  if (!evs.length || !D.amLeader()) return;
+  const done = load(CHIME_KEY, []) || [];
+  const ev = evs.find((e) => !done.includes(e.id));
+  if (!ev) return;
+  save(CHIME_KEY, [...done, ev.id].slice(-20));
+  const on = ev.kind === 'us' ? settings.chimeUS : settings.chimeJP;
+  if (!on) return;
+  if (alarmPlaying() && alarmKind() === 'alert') return;
+  playAlarm(settings.chimeSec, ev.kind);
+  toast(ev.label);
+}
+
 function tick() {
   const now = Date.now();
   emergencyTick(now);
+  chimeTick(now);
   updateStatus(now);
   warmTick(now);
   if (!pauseReason(now) && enabledCount() > 0) {
@@ -558,6 +581,9 @@ function fillSettings() {
   periodOptions('selRightBars', s.rightTf, s.rightBars);
   $('chkMa').checked = s.ind.ma; $('chkBb').checked = s.ind.bb; $('chkVol').checked = s.ind.vol;
   $('chkWake').checked = s.wakeLock;
+  $('chkChimeJP').checked = s.chimeJP;
+  $('chkChimeUS').checked = s.chimeUS;
+  $('selChimeSec').value = [3, 5, 10, 15, 30].includes(s.chimeSec) ? String(s.chimeSec) : '5';
   $('chkDark').checked = s.theme === 'dark';
   $('chkDark').onchange = () => { document.documentElement.dataset.theme = $('chkDark').checked ? 'dark' : 'light'; };
   seg('segColor', s.colorMode, (v) => { $('segColor').dataset.v = v; document.documentElement.dataset.color = v; });
@@ -576,6 +602,9 @@ function formValues() {
   s.leftBars = Number($('selLeftBars').value); s.rightBars = Number($('selRightBars').value);
   s.ind = { ma: $('chkMa').checked, bb: $('chkBb').checked, vol: $('chkVol').checked };
   s.wakeLock = $('chkWake').checked;
+  s.chimeJP = $('chkChimeJP').checked;
+  s.chimeUS = $('chkChimeUS').checked;
+  s.chimeSec = Number($('selChimeSec').value) || 5;
   s.theme = $('chkDark').checked ? 'dark' : 'light';
   s.colorMode = $('segColor').dataset.v; s.font = $('segFont').dataset.v;
   return s;
@@ -720,6 +749,10 @@ $('btnAlertBack').addEventListener('click', () => setAlertMode(false));
 $('btnAlertDone').addEventListener('click', () => closeSettings(false));
 $('chkAlertPopup').addEventListener('change', (e) => { settings.alertPopup = e.target.checked; save(KEY.settings, settings); });
 $('chkAlertSound').addEventListener('change', (e) => { settings.alertSound = e.target.checked; save(KEY.settings, settings); if (!e.target.checked) stopAlarm(); });
+document.querySelectorAll('.chime-test').forEach((b) => b.addEventListener('click', () => {
+  if (alarmPlaying() && alarmKind() === b.dataset.kind) { stopAlarm(); return; }
+  playAlarm(Math.min(Number($('selChimeSec').value) || 5, 10), b.dataset.kind);
+}));
 $('selAlertSec').addEventListener('change', (e) => { settings.alertSec = Number(e.target.value) || DEFAULTS.alertSec; save(KEY.settings, settings); });
 
 const rowOf = (code) => $('listBody').querySelector(`tr[data-code="${CSS.escape(code)}"]`);
@@ -1174,7 +1207,7 @@ document.addEventListener('pointerdown', (e) => {
   keepAwake();
   unlockAudio();
   // ポップアップを出さない設定で音だけ鳴っているときは、画面に触れたら止める
-  if (alarmPlaying() && !document.querySelector('.alert-card')) stopAlarm();
+  if (alarmPlaying() && !document.querySelector('.alert-card') && !e.target.closest?.('.chime-test')) stopAlarm();
 }, { passive: true });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;

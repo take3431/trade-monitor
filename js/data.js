@@ -9,8 +9,8 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261126061236';
-import { yahooSymbol, marketOfCode } from './names.js?v=20261126061236';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261126173613';
+import { yahooSymbol, marketOfCode } from './names.js?v=20261126173613';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = yahooSymbol;
@@ -657,6 +657,52 @@ function parseChart(json) {
   return { bars, meta: { price: m.regularMarketPrice ?? null, time: m.regularMarketTime ?? null, name: m.shortName || m.longName || '' } };
 }
 
+/* Yahoo のデータの誤りを直す：株式分割の直後などに、数日分だけ値の桁がずれていることがある
+   （例：1306 は 2026-03-30・31 の2日だけ、分割後の約380円が約37円になっている）。
+   前の足から急に2.5倍以上／0.4倍以下に飛び、3本以内に元の水準（±30%）へ戻る足を「桁ずれ」とみなし、
+   ずれが10倍・1/10などのきりの良い倍率なら掛け直し、そうでなければその足を取り除く。
+   本当の急騰・急落はふつう数日で元に戻らないので、巻き込まない。最新の足（まだ判断できない）は触らない。 */
+function fixScaleGlitches(bars) {
+  if (!bars || bars.length < 3) return { bars, changed: false };
+  const out = bars.slice();
+  let changed = false;
+  for (let i = 1; i < out.length - 1; i++) {
+    const ref = out[i - 1]?.[4];
+    if (!ref || !out[i]) continue;
+    const r = out[i][4] / ref;
+    if (r > 0.4 && r < 2.5) continue;
+    let j = i;
+    while (j + 1 < out.length && j - i + 1 < 3) { const rj = out[j + 1][4] / ref; if (rj > 0.4 && rj < 2.5) break; j++; }
+    if (j + 1 >= out.length) break;
+    const back = out[j + 1][4] / ref;
+    if (back < 0.7 || back > 1.43) continue; // 元の水準に戻らない → 本当の値動き
+    const f = ref / out[i][4];
+    const k = [10, 100, 1000, 0.1, 0.01, 0.001, 2, 3, 4, 5, 0.5, 0.25, 0.2].find((x) => Math.abs(f / x - 1) < 0.15);
+    for (let n = i; n <= j; n++) {
+      const b = out[n];
+      out[n] = k ? [b[0], b[1] * k, b[2] * k, b[3] * k, b[4] * k, Math.round(b[5] / k)] : null;
+    }
+    changed = true;
+    i = j;
+  }
+  // 1本の中で、始値・高値・安値だけが終値と桁違い（終値の2.5倍超／0.4倍未満）なら、その値だけ直す
+  // （週足・月足で、桁ずれした日の始値・安値だけが残っている場合など。本当の値動きでこれほどのヒゲはまず出ない）
+  for (let i = 0; i < out.length; i++) {
+    const b = out[i];
+    if (!b || !b[4]) continue;
+    const c = b[4];
+    const okv = (v) => v / c > 0.4 && v / c < 2.5;
+    if (okv(b[1]) && okv(b[2]) && okv(b[3])) continue;
+    const prev = out[i - 1]?.[4];
+    const o = okv(b[1]) ? b[1] : prev && okv(prev) ? prev : c;
+    const hi = okv(b[2]) ? b[2] : Math.max(o, c);
+    const lo = okv(b[3]) ? b[3] : Math.min(o, c);
+    out[i] = [b[0], o, Math.max(hi, o, c), Math.min(lo, o, c), c, b[5]];
+    changed = true;
+  }
+  return { bars: changed ? out.filter(Boolean) : bars, changed };
+}
+
 // 同じ日のバーは1本にまとめる（新しい方を採用）
 function dedupeDaily(bars) {
   const out = [];
@@ -798,7 +844,7 @@ function refreshBase(code, prio) {
       parsed = parseChart(await fetchYahoo(`/v8/finance/chart/${enc(ySym(code))}?interval=1d&range=10y&includeAdjustedClose=false`,
         { code, prio, initial: true, what: '日足10年分（分割・併合を検知して取り直し）' }));
     }
-    const daily = full ? dedupeDaily(parsed.bars) : mergeTail(base.bars, parsed.bars);
+    const daily = fixScaleGlitches(full ? dedupeDaily(parsed.bars) : mergeTail(base.bars, parsed.bars)).bars;
     // 値が前回と同じ（取引が無かった等）なら、保存済みのデータは書き換えず取得時刻だけ更新する
     const lastOld = base?.bars?.[base.bars.length - 1];
     const lastNew = daily[daily.length - 1];
@@ -1141,7 +1187,25 @@ export function gaveUpToday(code) { const f = failures.get(code); return !!f && 
 export function gaveUpSet() { const today = dayKey(Date.now()); return new Set([...failures].filter(([, f]) => f.d === today && f.n >= FAIL_GIVEUP).map(([c]) => c)); }
 export function clearFailure(code) { if (failures.delete(code)) saveFailures(); }
 
+const glitchChecked = new Set();
+async function repairStored(code) {
+  if (glitchChecked.has(code) || cfg.demo) return;
+  glitchChecked.add(code);
+  const cur = await getStored(code, 'base');
+  if (!cur?.bars?.length) return;
+  const fx = fixScaleGlitches(cur.bars);
+  const wkBad = fixScaleGlitches(cur.wk).changed, moBad = fixScaleGlitches(cur.mo).changed;
+  if (!fx.changed && !wkBad && !moBad) return;
+  // 日足を直し、週足・月足は日足のある期間（約2年）を作り直す。それより古い週足・月足に残っていれば、10年分を取り直す
+  let v = { ...cur, ...packBase(fx.bars, cur, false) };
+  if (fixScaleGlitches(v.wk).changed || fixScaleGlitches(v.mo).changed) v = { ...v, fullAt: 0 };
+  record({ t: Date.now(), code, what: 'データの桁ずれ（Yahoo の誤り）を直しました', route: '—', ok: true, ms: 0, note: '' });
+  derived.clear();
+  await putStored(code, 'base', v);
+}
+
 export async function loadSet(code, tfs, { force = false, onEntry = null, prio = PRIO.show, maxAgeMs = null } = {}) {
+  await repairStored(code);
   const entries = await cachedSet(code, tfs);
   let fetched = false, error = null, changed = false;
   const kinds = [...new Set(tfs.map(kindOf))];
