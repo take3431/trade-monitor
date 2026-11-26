@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261125175119';
-import * as D from './data.js?v=20261125175119';
-import { Stage, themeColors } from './chart.js?v=20261125175119';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261125175119';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261125175119';
+import * as M from './market.js?v=20261126061236';
+import * as D from './data.js?v=20261126061236';
+import { Stage, themeColors } from './chart.js?v=20261126061236';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, showAlertCard, initAlertCards } from './alerts.js?v=20261126061236';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261126061236';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -346,8 +346,28 @@ function pauseReason(now) {
   return null;
 }
 
+/* 1日の通信上限に達した日でも、後場の始まりと引け後の2回だけ株価を更新する（20銘柄で1回の別枠）。
+   1分ごとに時間帯を確認し、その日その時間帯で1回だけ行う。途中で止まっても続きから再開する。 */
+const EMERG_KEY = 'tm.emerg.v1';
+let emergBusy = false, emergCheckedAt = 0;
+function emergencyTick(now) {
+  if (emergBusy || now - emergCheckedAt < 60e3 || DEMO) return;
+  emergCheckedAt = now;
+  if (!D.budgetStatus().over || !D.amLeader() || D.isOffline()) return;
+  const done = load(EMERG_KEY, []) || [];
+  const slot = M.emergencySlots(now).find((s) => !done.includes(s.id));
+  if (!slot) return;
+  const codes = list.filter((x) => x.enabled && (slot.market === 'US' ? marketOf(x.code) === 'US' : marketOf(x.code) !== 'US')).map((x) => x.code);
+  emergBusy = true;
+  D.emergencyRefresh(codes, slot.since).then((ok) => {
+    if (ok) save(EMERG_KEY, [...done, slot.id].slice(-20));
+    if (ok && st.code && !st.settingsOpen) show(st.code); // 表示中の銘柄に新しい値を出す
+  }).catch(() => {}).finally(() => { emergBusy = false; });
+}
+
 function tick() {
   const now = Date.now();
+  emergencyTick(now);
   updateStatus(now);
   warmTick(now);
   if (!pauseReason(now) && enabledCount() > 0) {
@@ -418,7 +438,7 @@ function updateStatus(now = Date.now()) {
   const skew = D.clockSkew();
   mb.hidden = !(b.over || offline || skew || cool || follower || approxMode());
   mb.textContent = b.over ? '本日の通信上限' : offline ? '通信が切れています' : skew ? '端末の時計が遅れています' : cool ? '通信を控えています' : follower ? '別のタブで通信中' : '始値は近似';
-  mb.title = b.over ? `今日の通信が${b.cap}回に達したため、保存済みのデータで表示しています（明日0時に再開）`
+  mb.title = b.over ? `今日の通信が${b.cap}回に達したため、保存済みのデータで表示しています（明日0時に再開）。それでも、後場の始まり（12:55ごろ）と引け後（16:00ごろ）の2回だけは株価を更新します（米国株は取引開始30分後と引け後）`
     : offline ? 'ネットにつながっていないため、保存済みのデータで表示しています（つながったら自動で再開。この間は1日の通信回数に数えません）'
     : skew ? `端末の時計が約${Math.round(skew / 60e3)}分遅れています。取引時間の判定がずれて余計な通信をすることがあるので、端末の設定で時刻を「自動」にしてください`
     : cool ? '回数制限や通信の失敗が続いたため、しばらく通信を控えています（相手の負担を減らし、ban を防ぐため）'

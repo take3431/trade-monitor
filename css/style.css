@@ -268,7 +268,7 @@ tr.drag-placeholder td > * { visibility: hidden; }
 /* 銘柄名の横の現在値・前日比 */
 .sym-quote { display: inline-flex; align-items: baseline; gap: .7rem; margin-left: .6rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .q-price { font-size: 1.6rem; font-weight: 700; }
-.q-chg { font-size: 1.15rem; font-weight: 600; }
+.q-chg { font-size: 1.6rem; font-weight: 700; } /* 前日比・騰落率も株価と同じ大きさ */
 .sym-id { min-width: 0; }
 .sym-title { flex-wrap: nowrap; overflow: hidden; }
 .sym-code, .sym-quote { flex: none; }

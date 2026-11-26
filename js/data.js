@@ -9,8 +9,8 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261125175119';
-import { yahooSymbol, marketOfCode } from './names.js?v=20261125175119';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261126061236';
+import { yahooSymbol, marketOfCode } from './names.js?v=20261126061236';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = yahooSymbol;
@@ -265,6 +265,8 @@ let hostFlip = 0;
 export const DAILY_CAP = 300;
 const WARM_CAP = 240;
 export const INIT_CAP = 150;
+// 1日の上限に達した日でも、後場の始まりと引け後に株価を最低限更新するための別枠（20銘柄で1回。999銘柄×2回で100回）
+const EMERG_CAP = 120;
 const BUDGET_KEY = 'tm.budget.v1';
 let budget = { d: '', n: 0, i: 0 };
 try { budget = JSON.parse(localStorage.getItem(BUDGET_KEY)) || budget; } catch { /* ignore */ }
@@ -276,14 +278,18 @@ function budgetToday() {
   return budget;
 }
 // 通信切れで相手に届かなかった分は、1日の回数から戻す
-function refundBudget(initial) {
+function refundBudget(initial, emergency = false) {
   const b = budgetToday();
-  if (initial) b.i = Math.max(0, b.i - 1); else b.n = Math.max(0, b.n - 1);
+  if (emergency) b.e = Math.max(0, (b.e || 0) - 1);
+  else if (initial) b.i = Math.max(0, b.i - 1); else b.n = Math.max(0, b.n - 1);
   try { localStorage.setItem(BUDGET_KEY, JSON.stringify(b)); } catch { /* ignore */ }
 }
-function useBudget(prio, initial = false) {
+function useBudget(prio, initial = false, emergency = false) {
   const b = budgetToday();
-  if (initial) {
+  if (emergency) {
+    if ((b.e || 0) >= EMERG_CAP) return false;
+    b.e = (b.e || 0) + 1;
+  } else if (initial) {
     if (b.i >= INIT_CAP) return false;
     b.i++;
   } else {
@@ -347,7 +353,7 @@ function fetchYahoo(path, ctx = {}, check = (j) => j && j.chart) {
     const giveUp = () => {
       finish();
       if (netFails.length && netFails.length === tries) {
-        for (let i = 0; i < tries; i++) refundBudget(!!ctx.initial);
+        for (let i = 0; i < tries; i++) refundBudget(!!ctx.initial, !!ctx.emergency);
         netDownUntil = Date.now() + 30e3;
         reject(offlineError());
         return;
@@ -359,7 +365,7 @@ function fetchYahoo(path, ctx = {}, check = (j) => j && j.chart) {
     const finish = () => { done = true; clearTimeout(hedge); ctrls.forEach((c) => c.abort()); };
     const launch = () => {
       if (done || idx >= order.length) return;
-      if (!useBudget(ctx.prio, !!ctx.initial)) {
+      if (!useBudget(ctx.prio, !!ctx.initial, !!ctx.emergency)) {
         if (pending === 0) { finish(); reject(overError()); }
         return;
       }
@@ -442,16 +448,23 @@ let hold = 0; // 回数制限を受けたら全体を一時停止する時刻
 export function pauseAll(ms) { hold = Math.max(hold, Date.now() + ms); saveCool(); }
 loadCool();
 
-function schedule(prio, fn) {
+function schedule(prio, fn, em = false) {
   return new Promise((resolve, reject) => {
-    queue.push({ prio, fn, resolve, reject, t: Date.now() });
+    queue.push({ prio, fn, resolve, reject, t: Date.now(), em });
     queue.sort((a, b) => a.prio - b.prio || a.t - b.t);
     pump();
   });
 }
 function pump() {
   if (active >= MAX_ACTIVE || !queue.length) return;
-  { const bs = budgetStatus(); if (bs.over && bs.initOver) { while (queue.length) queue.shift().reject(overError()); return; } }
+  {
+    // 上限に達したら、取りやめる（「最低限の更新」は別枠なので通す）
+    const bs = budgetStatus();
+    if (bs.over && bs.initOver) {
+      for (let i = queue.length - 1; i >= 0; i--) if (!queue[i].em) queue.splice(i, 1)[0].reject(overError());
+      if (!queue.length) return;
+    }
+  }
   const now = Date.now();
   if (softHold > now && queue[0].prio !== PRIO.show) {
     while (queue.length && queue[0].prio !== PRIO.show) queue.shift().reject(quietError('通信を控えています', 'cooling'));
@@ -907,7 +920,7 @@ function fixDue(code, b, now = Date.now()) {
   return now - b.approxSince > (cfg.fixDays + (h % 5)) * 86400e3;
 }
 
-function mergeSpark(base, x, approxOpen, code) {
+function mergeSpark(base, x, approxOpen, code, prevOpen = false) {
   const ts = x.timestamp;
   const lastT = ts[ts.length - 1];
   const today = dayKey(lastT * 1000);
@@ -927,6 +940,7 @@ function mergeSpark(base, x, approxOpen, code) {
   let approx = false;
   if (lastDay === today) open = last[1];
   else if (approxOpen) { open = cfg.openMode === 'prev' ? last[4] : openCache.get(`${x.meta.symbol}|${today}`); approx = true; }
+  if (open == null && prevOpen) { open = last[4]; approx = true; }
   if (open == null) return { need: 'open' };
   const high = Math.max(m.regularMarketDayHigh ?? price, open, price);
   const low = Math.min(m.regularMarketDayLow ?? price, open, price);
@@ -1011,6 +1025,42 @@ async function saveMerged(code, base, m, now) {
   }
   await putStored(code, 'base', { ...packBase(m.daily, base, false), meta: m.meta, fetchedAt: now, fullAt: base.fullAt,
     approxSince: base.approxSince || (m.approx ? now : null) });
+}
+
+/* 1日の上限に達した日の「最低限の更新」：codes を20銘柄ずつまとめて更新する（別枠の回数を使う）。
+   since 以降にすでに更新した銘柄は飛ばす（途中で止まっても、続きから再開できる）。
+   通信を控えている・通信が切れている・通信役でないときは何もしない（次の機会に再挑戦）。
+   全部終わったら true を返す。 */
+export async function emergencyRefresh(codes, since) {
+  if (cfg.demo || !isLeader() || isOffline() || cooling()) return false;
+  const todo = [];
+  for (const c of codes) {
+    if (noDataToday(c) || gaveUpToday(c)) continue;
+    const b = await getStored(c, 'base');
+    if (b?.bars?.length && !(b.fetchedAt >= since)) todo.push(c);
+  }
+  for (let i = 0; i < todo.length; i += BATCH_MAX) {
+    const chunk = todo.slice(i, i + BATCH_MAX);
+    const now = Date.now();
+    const bases = new Map();
+    for (const c of chunk) bases.set(c, await getStored(c, 'base'));
+    let json;
+    try {
+      json = await schedule(PRIO.prefetch, () => fetchYahoo(
+        `/v7/finance/spark?symbols=${chunk.map((c) => enc(ySym(c))).join(',')}&range=5d&interval=1d`,
+        { code: `${chunk.length}銘柄`, prio: PRIO.prefetch, emergency: true, what: '上限後の最低限の更新' }, (j) => j && j.spark), true);
+    } catch { return false; }
+    const results = sparkResults(json);
+    for (const c of chunk) {
+      const x = results.get(ySym(c));
+      const base = bases.get(c);
+      if (!x || !base?.bars?.length) continue;
+      const m = mergeSpark(base, x, true, c, true);
+      if (m.need) continue; // 分割・抜けなどは、上限が戻ってから通常の方法で
+      await saveMerged(c, base, m, now);
+    }
+  }
+  return true;
 }
 
 // code の更新を、この先表示される銘柄と一緒にまとめて行う（最大20銘柄）

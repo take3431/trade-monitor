@@ -3,7 +3,7 @@ const H = 3600e3;
 const MIN = 60e3;
 
 // 休場日は js/holidays.js（tools/gen-holidays.py で生成、2040年まで）
-import { JP_HOLIDAYS as HOLIDAYS, US_HOLIDAYS, US_EARLY_CLOSE } from './holidays.js?v=20261125175119';
+import { JP_HOLIDAYS as HOLIDAYS, US_HOLIDAYS, US_EARLY_CLOSE } from './holidays.js?v=20261126061236';
 
 // 前場 9:00-11:30 / 後場 12:30-15:30（分単位）
 const AM = [540, 690];
@@ -138,6 +138,28 @@ function usLastClose(now) {
     if (close <= now) return Math.floor(close / MIN) * MIN;
   }
   return 0;
+}
+
+/* 1日の通信上限に達した日でも、株価を最低限更新する時間帯（その日1回ずつ）
+   ・東証：後場の始まり（データが届く 12:55〜13:55）と、引け後（16:00〜）
+   ・米国：取引開始30分後（10:00〜11:00 米国東部時間）と、引けの15分後から3時間
+   海外の指数・為替・暗号資産は東証と同じ時間帯にまとめる。
+   返す値：[{ id（その日・その時間帯で一意）, market: 'JP'|'US', since（時間帯の始まり） }] */
+export function emergencySlots(now = Date.now()) {
+  const out = [];
+  const p = jst(now);
+  const key = dayKey(now);
+  if (isTradingDay(p.y, p.m, p.d)) {
+    if (p.min >= 775 && p.min < 835) out.push({ id: `jp-pm|${key}`, market: 'JP', since: now - (p.min - 775) * MIN });
+    if (p.min >= 960) out.push({ id: `jp-close|${key}`, market: 'JP', since: now - (p.min - 960) * MIN });
+  }
+  const e = et(now);
+  if (usTradingDay(e)) {
+    if (e.min >= 600 && e.min < 660) out.push({ id: `us-open|${e.key}`, market: 'US', since: now - (e.min - 600) * MIN });
+    const c = usCloseMin(e) + 15;
+    if (e.min >= c && e.min < c + 180) out.push({ id: `us-close|${e.key}`, market: 'US', since: now - (e.min - c) * MIN });
+  }
+  return out;
 }
 
 export function fmtClock(t) {
