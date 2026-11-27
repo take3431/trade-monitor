@@ -3,7 +3,7 @@ const H = 3600e3;
 const MIN = 60e3;
 
 // 休場日は js/holidays.js（tools/gen-holidays.py で生成、2040年まで）
-import { JP_HOLIDAYS as HOLIDAYS, US_HOLIDAYS, US_EARLY_CLOSE } from './holidays.js?v=20261126173613';
+import { JP_HOLIDAYS as HOLIDAYS, US_HOLIDAYS, US_EARLY_CLOSE } from './holidays.js?v=20261127113228';
 
 // 前場 9:00-11:30 / 後場 12:30-15:30（分単位）
 const AM = [540, 690];
@@ -173,6 +173,20 @@ export function marketOpenEvents(now = Date.now()) {
   }
   const e = et(now);
   if (usTradingDay(e) && e.min >= 570 && e.min < 572) out.push({ id: `us|${e.key}`, kind: 'us', label: '米国市場が始まりました' });
+  return out;
+}
+
+/* 市場が閉じた瞬間（前場11:30・大引け15:30（東証）、16:00（米国東部時間。短縮取引日は13:00））から2分以内なら、そのできごとを返す */
+export function marketCloseEvents(now = Date.now()) {
+  const out = [];
+  const p = jst(now);
+  if (isTradingDay(p.y, p.m, p.d)) {
+    if (p.min >= AM[1] && p.min < AM[1] + 2) out.push({ id: `jp-am-close|${dayKey(now)}`, kind: 'jpClose', label: '東証の前場が終わりました' });
+    if (p.min >= PM[1] && p.min < PM[1] + 2) out.push({ id: `jp-pm-close|${dayKey(now)}`, kind: 'jpClose', label: '東証の取引が終わりました（大引け）' });
+  }
+  const e = et(now);
+  const c = usCloseMin(e);
+  if (usTradingDay(e) && e.min >= c && e.min < c + 2) out.push({ id: `us-close|${e.key}`, kind: 'usClose', label: '米国市場の取引が終わりました' });
   return out;
 }
 

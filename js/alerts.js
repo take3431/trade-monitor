@@ -63,7 +63,16 @@ const SOUNDS = {
   // チャイム風：三角波＋鐘らしい少しずれた倍音（2.76倍）。長めの余韻
   us: { period: 3.2, gain: 0.8, notes: [[659.3, 0], [554.4, 0.45], [440.0, 0.9]], decay: 1.9, attack: 0.012,
     partials: [['triangle', 1, 0.7], ['sine', 2.76, 0.1], ['sine', 2, 0.12]] },
+  // 日本市場の終了：「おつかれさま」のように、ふわっと下がる3音（ソ・ミ・ド）。ゆっくり立ち上がり、長く消えていく
+  jpClose: { period: 2.5, gain: 0.7, notes: [[784.0, 0], [659.3, 0.34], [523.3, 0.68]], decay: 1.8, attack: 0.05,
+    partials: [['sine', 1, 0.6], ['sine', 1.003, 0.18], ['sine', 2, 0.04]] },
+  // 米国市場の終了：シンギングボウル（おりん）のような、低く柔らかな2音（レ・ラ）。わずかにずらした音を重ねて、ゆらぎのある響きに
+  usClose: { period: 2.5, gain: 0.75, notes: [[293.7, 0], [440.0, 0.5]], decay: 2.3, attack: 0.12,
+    partials: [['sine', 1, 0.55], ['sine', 1.004, 0.25], ['sine', 2.71, 0.06], ['sine', 5.4, 0.015]] },
 };
+// 市場の開始・終了の音は「鳴らす時間 ÷ 2.5秒」回（切り捨て、最低1回）鳴らす：3秒→1回、5秒→2回、10秒→4回、15秒→6回、30秒→12回
+const BELL_SPACING = 2.5;
+export const bellCount = (sec) => Math.max(1, Math.floor(sec / BELL_SPACING));
 let alarmTimer = null, alarmUntil = 0, alarmOut = null, alarmKindNow = null;
 function chimeOnce(at, snd) {
   for (const [f, dt] of snd.notes) {
@@ -82,7 +91,8 @@ function chimeOnce(at, snd) {
     }
   }
 }
-// sec 秒のあいだ繰り返し鳴らす。stopAlarm() で止まる。kind：'alert' | 'jp' | 'us'
+// kind：'alert'（株価アラート：sec 秒のあいだ繰り返す） ／ 'jp'・'us'・'jpClose'・'usClose'（市場の開始・終了：bellCount(sec) 回）
+// stopAlarm() で止まる。
 //  音量を上げても割れないよう、最後に音量の山をならす処理（コンプレッサー）を通す
 export function playAlarm(sec = 10, kind = 'alert') {
   unlockAudio();
@@ -96,6 +106,16 @@ export function playAlarm(sec = 10, kind = 'alert') {
   comp.connect(out).connect(actx.destination);
   alarmOut = comp;
   alarmKindNow = kind;
+  if (kind !== 'alert' && SOUNDS[kind]) {
+    // 決まった回数だけ、2.5秒おきに予約して鳴らし、最後の音が自然に消えたら終わる
+    const n = bellCount(sec);
+    const t0 = actx.currentTime + 0.05;
+    for (let i = 0; i < n; i++) chimeOnce(t0 + i * BELL_SPACING, snd);
+    const total = ((n - 1) * BELL_SPACING + snd.notes[snd.notes.length - 1][1] + snd.decay + 0.3) * 1000;
+    alarmUntil = Date.now() + total;
+    alarmTimer = setTimeout(() => finishAlarm(0.2), total);
+    return;
+  }
   alarmUntil = Date.now() + sec * 1000;
   let next = actx.currentTime + 0.05;
   const pump = () => {
@@ -109,6 +129,7 @@ export function playAlarm(sec = 10, kind = 'alert') {
 }
 function finishAlarm(tailSec) {
   clearInterval(alarmTimer);
+  clearTimeout(alarmTimer);
   alarmTimer = null;
   alarmKindNow = null;
   const node = alarmOut;
@@ -117,6 +138,7 @@ function finishAlarm(tailSec) {
 }
 export function stopAlarm() {
   clearInterval(alarmTimer);
+  clearTimeout(alarmTimer);
   alarmTimer = null;
   alarmKindNow = null;
   if (alarmOut) {
