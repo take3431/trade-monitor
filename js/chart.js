@@ -1,8 +1,8 @@
 // 表示レイヤー（ステージ）とチャート描画
 // ステージを2枚重ねておき、非表示側に描画してから切り替えることでチラつきを防ぐ。
-import { TF } from './data.js?v=20261127113228';
-import { isUS, isIndex, yahooJpUrl } from './names.js?v=20261127113228';
-import { fmtStamp } from './market.js?v=20261127113228';
+import { TF } from './data.js?v=20261127151836';
+import { isUS, isIndex, yahooJpUrl } from './names.js?v=20261127151836';
+import { fmtStamp } from './market.js?v=20261127151836';
 
 const LC = window.LightweightCharts;
 const JST = 9 * 3600;
@@ -223,7 +223,7 @@ const STAGE_HTML = `
   <section class="sym-head">
     <div class="sym-id">
       <div class="sym-title"><span class="sym-code"></span><a class="sym-name" target="_blank" rel="noopener noreferrer"></a>
-        <span class="sym-quote"><span class="q-price"></span><span class="q-chg"></span></span></div>
+        <span class="sym-quote"><span class="q-price"></span><span class="q-chg"></span><span class="q-flag" hidden></span></span></div>
     </div>
     <div class="sym-meta"><div class="sym-pos"></div><div class="sym-time"></div></div>
   </section>
@@ -244,7 +244,7 @@ export class Stage {
     const $ = (s) => root.querySelector(s);
     this.el = {
       code: $('.sym-code'), name: $('.sym-name'), pos: $('.sym-pos'),
-      time: $('.sym-time'), title: $('.sym-title'), qPrice: $('.q-price'), qChg: $('.q-chg'), quote: $('.sym-quote'),
+      time: $('.sym-time'), title: $('.sym-title'), qPrice: $('.q-price'), qChg: $('.q-chg'), qFlag: $('.q-flag'), quote: $('.sym-quote'),
     };
     this.panes = [...root.querySelectorAll('.chart-card')].map((c) => new Pane(c));
     this.code = null;
@@ -252,14 +252,23 @@ export class Stage {
 
   // 銘柄名が長くて株価と重なる場合だけ、銘柄名の文字を小さくする（最小で元の55%）
   fitTitle() {
-    const { title, name } = this.el;
+    const { title, name, qChg, qFlag } = this.el;
     name.style.fontSize = '';
+    qChg.style.fontSize = '';
+    qFlag.style.fontSize = '';
     if (!title.clientWidth) return; // 非表示中は測れないので、表示時に再調整
     let scale = 1;
     const over = () => title.scrollWidth > title.clientWidth + 1 || name.scrollWidth > name.clientWidth + 1;
     while (over() && scale > 0.55) {
       scale -= 0.05;
       name.style.fontSize = `${scale.toFixed(2)}em`;
+    }
+    // 銘柄名を小さくしても右の「何銘柄目・時刻」とぶつかるときは、前日比と「高」「安」も小さくする（現在値はそのまま）
+    let q = 1;
+    while (over() && q > 0.6) {
+      q -= 0.05;
+      qChg.style.fontSize = `${(1.6 * q).toFixed(2)}rem`;
+      qFlag.style.fontSize = `${(1.1 * q).toFixed(2)}rem`;
     }
   }
 
@@ -268,7 +277,8 @@ export class Stage {
     this.code = null;
   }
 
-  render(item, entries, settings, { pos = '', keepRange = false, loading = false } = {}) {
+  // status：{ state: 'ok' | 'pending'（今日のデータ待ち。前日比を「−」） | 'special'（特別気配の可能性。「特」）, limit: 'high' | 'low' | null }
+  render(item, entries, settings, { pos = '', keepRange = false, loading = false, status = null } = {}) {
     const e = this.el;
     this.code = item.code;
     this.entries = entries;
@@ -287,12 +297,31 @@ export class Stage {
     const sign = (v) => (v > 0 ? '+' : v < 0 ? '\u2212' : '\u00b1');
     const signed = (v) => (isUs || idx ? sign(v) + dec2(Math.abs(v)) : fmtSigned(v));
     e.quote.hidden = !q || q.price == null;
+    e.qFlag.hidden = true;
     if (q && q.price != null) {
-      const d = dirClass(q.chg);
+      const state = status?.state || 'ok';
+      const waiting = state === 'pending' || state === 'special';
+      const d = waiting ? 'flat' : dirClass(q.chg);
       e.qPrice.textContent = money(q.price);
-      e.qChg.textContent = q.chg == null ? '' : signed(q.chg) + ' (' + fmtSigned(q.pct, 2) + '%)';
-      e.qChg.className = 'q-chg ' + d;
+      if (state === 'pending') {
+        e.qChg.textContent = '\u2212';
+        e.qChg.title = '取引が始まり、今日の株価が届くのを待っています（東証は約20分遅れ）';
+      } else if (state === 'special') {
+        e.qChg.textContent = '特';
+        e.qChg.title = 'ほかの銘柄には今日の取引があるのに、この銘柄はまだ取引が成立していません（特別気配・売買停止の可能性）';
+      } else {
+        e.qChg.textContent = q.chg == null ? '' : signed(q.chg) + ' (' + fmtSigned(q.pct, 2) + '%)';
+        e.qChg.title = '';
+      }
+      e.qChg.className = `q-chg ${d}${state === 'special' ? ' special' : ''}`;
       e.qPrice.className = 'q-price ' + d;
+      // ストップ高・ストップ安（東証の値幅制限いっぱい）
+      if (!waiting && status?.limit) {
+        e.qFlag.hidden = false;
+        e.qFlag.textContent = status.limit === 'high' ? '高' : '安';
+        e.qFlag.className = `q-flag ${status.limit === 'high' ? 'lim-high' : 'lim-low'}`;
+        e.qFlag.title = status.limit === 'high' ? 'ストップ高（値幅制限の上限）' : 'ストップ安（値幅制限の下限）';
+      }
     }
     e.pos.textContent = pos;
     // データの時刻：Yahoo が返す最終約定時刻（東証は約20分遅れ）。無ければ取得時刻から遅延分を引く

@@ -3,7 +3,7 @@ const H = 3600e3;
 const MIN = 60e3;
 
 // 休場日は js/holidays.js（tools/gen-holidays.py で生成、2040年まで）
-import { JP_HOLIDAYS as HOLIDAYS, US_HOLIDAYS, US_EARLY_CLOSE } from './holidays.js?v=20261127113228';
+import { JP_HOLIDAYS as HOLIDAYS, US_HOLIDAYS, US_EARLY_CLOSE } from './holidays.js?v=20261127151836';
 
 // 前場 9:00-11:30 / 後場 12:30-15:30（分単位）
 const AM = [540, 690];
@@ -35,10 +35,101 @@ export function isTradingDay(y, m, d) {
   return !HOLIDAYS.has(`${y}-${pad(m)}-${pad(d)}`);
 }
 
+/* ---------------- 銘柄ごとの取引時間の種類 ----------------
+   JP：東証（休場日の表つき） ／ US：米国（祝日・短縮取引日の表つき）
+   HK・CN・KR・TW・IN・UK・DE・EU：各国の株価指数（下の SESSIONS の現地時間。各国の祝日は判定しない）
+   FX：為替（平日24時間。日本時間の土曜7:00〜月曜7:00と、FX_HOLIDAYS の日の7:00から24時間は休み）
+   FUT：先物（CME などほぼ24時間。FX と同じ扱い） ／ C：暗号資産（24時間・土日も）
+   種類を足すときは SESSIONS に書き、names.js で銘柄に割り当てる。 */
+export const SESSIONS = {
+  HK: { tz: 'Asia/Hong_Kong', open: 570, close: 960, label: '香港' },     // 9:30〜16:00
+  CN: { tz: 'Asia/Shanghai', open: 570, close: 900, label: '上海' },      // 9:30〜15:00
+  KR: { tz: 'Asia/Seoul', open: 540, close: 930, label: '韓国' },         // 9:00〜15:30
+  TW: { tz: 'Asia/Taipei', open: 540, close: 810, label: '台湾' },        // 9:00〜13:30
+  IN: { tz: 'Asia/Kolkata', open: 555, close: 930, label: 'インド' },     // 9:15〜15:30
+  UK: { tz: 'Europe/London', open: 480, close: 990, label: '英国' },      // 8:00〜16:30
+  DE: { tz: 'Europe/Berlin', open: 540, close: 1050, label: 'ドイツ' },   // 9:00〜17:30
+  EU: { tz: 'Europe/Berlin', open: 540, close: 1050, label: '欧州' },     // 9:00〜17:30
+};
+// 為替の休日（日本時間の月-日。その日の7:00から24時間は休み）。必要に応じて足す
+export const FX_HOLIDAYS = ['01-01', '12-25'];
+const isFxLike = (m) => m === 'FX' || m === 'FUT' || m === 'X';
+const SESS_DELAY_MS = 15 * MIN; // 各国の指数は Yahoo で約15分遅れ
+// 表示用の名前（画面上部の状態）
+export const MARKET_LABEL = { JP: '東証', US: '米国', FX: '為替', FUT: '先物', C: '暗号資産', X: '為替' };
+for (const [k, v] of Object.entries(SESSIONS)) MARKET_LABEL[k] = v.label;
+
+const localFmts = new Map();
+function local(t, tz) {
+  let f = localFmts.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour12: false, weekday: 'short', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric' });
+    localFmts.set(tz, f);
+  }
+  const o = {};
+  for (const x of f.formatToParts(new Date(t))) o[x.type] = x.value;
+  return { dow: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(o.weekday), key: `${o.year}-${pad(Number(o.month))}-${pad(Number(o.day))}`, min: (Number(o.hour) % 24) * 60 + Number(o.minute) };
+}
+function sessPhase(now, s) {
+  const p = local(now, s.tz);
+  if (p.dow === 0 || p.dow === 6) return { open: false, code: 'holiday', label: '休場日' };
+  if (p.min < s.open) return { open: false, code: 'pre', label: '取引開始前' };
+  if (p.min < s.close) return { open: true, code: 'open', label: '取引中' };
+  return { open: false, code: 'closed', label: '閉場中' };
+}
+function sessLastClose(now, s) {
+  for (let i = 0; i < 10; i++) {
+    const t = now - i * 24 * H;
+    const p = local(t, s.tz);
+    if (p.dow === 0 || p.dow === 6) continue;
+    const close = t - (p.min - s.close) * MIN;
+    if (close <= now) return Math.floor(close / MIN) * MIN;
+  }
+  return 0;
+}
+
+/* その銘柄の「今日の取引」が始まっているのに、まだ今日のデータが届いていないか（前日比を「−」にする）。
+   timeSec：データの最終約定時刻（秒）。FX・FUT・C（ほぼ24時間動くもの）は対象外 */
+export function awaitingToday(market, timeSec, now = Date.now()) {
+  if (!timeSec) return false;
+  const t = timeSec * 1000;
+  if (market === 'JP') {
+    const p = jst(now);
+    return isTradingDay(p.y, p.m, p.d) && p.min >= AM[0] && dayKey(t) !== dayKey(now);
+  }
+  if (market === 'US') {
+    const e = et(now);
+    return usTradingDay(e) && e.min >= 570 && et(t).key !== e.key;
+  }
+  const s = SESSIONS[market];
+  if (s) {
+    const p = local(now, s.tz);
+    return p.dow > 0 && p.dow < 6 && p.min >= s.open && local(t, s.tz).key !== p.key;
+  }
+  return false;
+}
+// 東証の今日の取引開始（9:00）の時刻（取引日でなければ 0）
+export function jpOpenToday(now = Date.now()) {
+  const p = jst(now);
+  if (!isTradingDay(p.y, p.m, p.d)) return 0;
+  return Date.UTC(p.y, p.m - 1, p.d) - 9 * H + AM[0] * MIN;
+}
+/* 東証の値幅制限（基準値段＝前日終値ごとの、1日に動ける幅）。ストップ高・ストップ安の判定に使う。
+   ※制限値幅の拡大（連続してストップ高・安になったとき等）は考えない */
+const JP_LIMITS = [[100, 30], [200, 50], [500, 80], [700, 100], [1000, 150], [1500, 300], [2000, 400], [3000, 500], [5000, 700], [7000, 1000],
+  [10000, 1500], [15000, 3000], [20000, 4000], [30000, 5000], [50000, 7000], [70000, 10000], [100000, 15000], [150000, 30000], [200000, 40000],
+  [300000, 50000], [500000, 70000], [700000, 100000], [1000000, 150000], [1500000, 300000], [2000000, 400000], [3000000, 500000],
+  [5000000, 700000], [7000000, 1000000], [10000000, 1500000], [15000000, 3000000], [20000000, 4000000], [30000000, 5000000], [50000000, 7000000]];
+export function jpLimitWidth(prev) {
+  for (const [lim, w] of JP_LIMITS) if (prev < lim) return w;
+  return 10000000;
+}
+
 export function marketPhase(now = Date.now(), market = 'JP') {
   if (market === 'US') return usPhase(now);
   if (market === 'C') return { open: true, code: 'open', label: '取引中（24時間）' }; // 暗号資産は土日も動く
-  if (market === 'X') return xPhase(now);
+  if (isFxLike(market)) return xPhase(now);
+  if (SESSIONS[market]) return sessPhase(now, SESSIONS[market]);
   const p = jst(now);
   if (!isTradingDay(p.y, p.m, p.d)) return { open: false, code: 'holiday', label: '休場日' };
   if (p.min < AM[0]) return { open: false, code: 'pre', label: '取引開始前' };
@@ -72,14 +163,16 @@ export function lastSessionEnd(now = Date.now()) {
 export const JP_DELAY_MS = 20 * MIN;
 export function dataLive(now = Date.now(), market = 'JP') {
   if (market === 'C') return true;              // 暗号資産は止めない
-  if (market === 'X') return xPhase(now).open;   // 海外の指数・為替・商品は土日だけ止める
+  if (isFxLike(market)) return xPhase(now).open; // 為替・先物・商品は土日・休日だけ止める
+  if (SESSIONS[market]) return sessPhase(now - SESS_DELAY_MS, SESSIONS[market]).open; // 各国の指数（約15分遅れ）
   return market === 'US' ? marketPhase(now, 'US').open : marketPhase(now - JP_DELAY_MS, 'JP').open;
 }
 export function isFresh(fetchedAt, ttlMs, now = Date.now(), market = 'JP') {
   if (!fetchedAt) return false;
   if (!dataLive(now, market)) {
-    const end = market === 'US' ? usLastClose(now) : market === 'X' ? xLastClose(now) : lastSessionEnd(now - JP_DELAY_MS);
-    const settle = end + (market === 'US' ? US_SETTLE_MS : market === 'X' ? 5 * MIN : SETTLE_MS);
+    const s = SESSIONS[market];
+    const end = market === 'US' ? usLastClose(now) : isFxLike(market) ? xLastClose(now) : s ? sessLastClose(now - SESS_DELAY_MS, s) : lastSessionEnd(now - JP_DELAY_MS);
+    const settle = end + (market === 'US' ? US_SETTLE_MS : isFxLike(market) ? 5 * MIN : s ? SESS_DELAY_MS + 5 * MIN : SETTLE_MS);
     if (now >= settle) return fetchedAt >= settle;
   }
   return now - fetchedAt < ttlMs;
@@ -89,19 +182,27 @@ export function isFresh(fetchedAt, ttlMs, now = Date.now(), market = 'JP') {
    為替は日本時間の土曜朝〜月曜朝が休み。海外の株価指数・商品先物もこの間は動かないので、
    土曜7:00〜月曜7:00（日本時間）は「週末の休み」とし、その前に取得済みなら通信しない。
    （各国の祝日は判定しない。祝日は値が変わらないだけで、表示には影響しない） */
-const X_WEEKEND_START = 7 * 60; // 土曜7:00
+const X_WEEKEND_START = 7 * 60; // 土曜7:00（為替の休日も、その日の7:00から24時間）
+const fxHoliday = (t) => FX_HOLIDAYS.includes(dayKey(t).slice(5));
 function xPhase(now) {
   const p = jst(now);
   const weekend = (p.dow === 6 && p.min >= X_WEEKEND_START) || p.dow === 0 || (p.dow === 1 && p.min < X_WEEKEND_START);
-  return weekend ? { open: false, code: 'holiday', label: '週末の休み' } : { open: true, code: 'open', label: '取引中' };
+  if (weekend) return { open: false, code: 'holiday', label: '週末の休み' };
+  const holiday = (fxHoliday(now) && p.min >= X_WEEKEND_START) || (fxHoliday(now - 24 * H) && p.min < X_WEEKEND_START);
+  if (holiday) return { open: false, code: 'holiday', label: '休日' };
+  return { open: true, code: 'open', label: '取引中' };
 }
-// 直近の「週末の休み」の始まり（土曜7:00 日本時間）
+// 直近の「休み」の始まり（土曜7:00、または為替の休日の7:00。日本時間）
 function xLastClose(now) {
   const p = jst(now);
   const midnight = Date.UTC(p.y, p.m - 1, p.d) - 9 * H;
-  let t = midnight - ((p.dow - 6 + 7) % 7) * 24 * H + X_WEEKEND_START * MIN;
-  if (t > now) t -= 7 * 24 * H;
-  return t;
+  for (let i = 0; i < 9; i++) {
+    const day = midnight - i * 24 * H;
+    const t = day + X_WEEKEND_START * MIN;
+    if (t > now) continue;
+    if (jst(day).dow === 6 || fxHoliday(day)) return t;
+  }
+  return 0;
 }
 
 /* ---------------- 米国市場（NYSE / NASDAQ） ----------------

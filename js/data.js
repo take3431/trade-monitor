@@ -9,8 +9,8 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261127113228';
-import { yahooSymbol, marketOfCode } from './names.js?v=20261127113228';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261127151836';
+import { yahooSymbol, marketOfCode } from './names.js?v=20261127151836';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = yahooSymbol;
@@ -576,7 +576,7 @@ function quoteWithTime(v) {
   const q = quoteOfBase(v);
   if (!q) return null;
   const last = v.bars[v.bars.length - 1];
-  return { ...q, time: v.meta?.time || last?.[0] || null };
+  return { ...q, time: v.meta?.time || last?.[0] || null, fetchedAt: v.fetchedAt || 0 };
 }
 export async function clearCache() {
   mem.clear();
@@ -646,14 +646,18 @@ function parseChart(json) {
   }
   const ts = r.timestamp || [];
   const q = r.indicators?.quote?.[0] || {};
+  const m = r.meta || {};
   const bars = [];
   for (let i = 0; i < ts.length; i++) {
-    const o = q.open?.[i], h = q.high?.[i], l = q.low?.[i], c = q.close?.[i];
+    const o = q.open?.[i], h = q.high?.[i], l = q.low?.[i];
+    let c = q.close?.[i];
+    // Yahoo は最新の足（取引中・引け直後）の終値だけ空のことがある。始値・高値・安値があり、
+    // 現在値の時刻がその足の中なら、現在値を終値として使う（今日のローソク足が抜けないように）
+    if (c == null && i === ts.length - 1 && o != null && m.regularMarketPrice != null && (m.regularMarketTime || 0) >= ts[i]) c = m.regularMarketPrice;
     if (o == null || h == null || l == null || c == null) continue;
-    bars.push([ts[i], o, h, l, c, q.volume?.[i] || 0]);
+    bars.push([ts[i], o, Math.max(h, c), Math.min(l, c), c, q.volume?.[i] || 0]);
   }
   bars.sort((a, b) => a[0] - b[0]);
-  const m = r.meta || {};
   return { bars, meta: { price: m.regularMarketPrice ?? null, time: m.regularMarketTime ?? null, name: m.shortName || m.longName || '' } };
 }
 
@@ -1272,8 +1276,10 @@ function quoteOfBase(base) {
   const t = base.meta?.time || last[0];
   const sameSession = t >= last[0] && t - last[0] < 86400;
   const prev = sameSession ? b[b.length - 2]?.[4] : last[4];
-  if (price == null || prev == null) return { price, chg: null, pct: null };
-  return { price, chg: price - prev, pct: prev ? ((price - prev) / prev) * 100 : null };
+  // time：最終約定の時刻（取引開始後に今日のデータが届いたかの判定に使う） ／ fetchedAt：取得した時刻（特別気配の判定に使う）
+  const extra = { time: t, fetchedAt: base.fetchedAt || 0 };
+  if (price == null || prev == null) return { price, chg: null, pct: null, ...extra };
+  return { price, chg: price - prev, pct: prev ? ((price - prev) / prev) * 100 : null, ...extra };
 }
 
 const searchCache = new LRU(50); // 検索語 -> { at, json }

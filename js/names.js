@@ -2,9 +2,13 @@
 //  - 日本株：JPX（日本取引所グループ）公表の上場銘柄一覧から作成した data/jp-stocks.json（約4,400銘柄）
 //  - 米国株：よく取引される銘柄の日本語名（それ以外は Yahoo の検索結果の英語名）
 
-/* 主要な指数・為替・商品（Yahoo のシンボルをそのまま銘柄コードとして使う）
-   コード: [日本語名, 検索用の別名（空白区切り）, 取引時間の区分, Yahoo!ファイナンス（日本）のページのコード]
-   取引時間の区分：JP＝東証と同じ ／ US＝米国市場と同じ ／ X＝海外市場・為替・商品（土日は休み） ／ C＝暗号資産（24時間・土日も） */
+/* 主要な指数・先物・為替・商品（Yahoo のシンボルをそのまま銘柄コードとして使う）
+   コード: [日本語名, 検索用の別名（空白区切り）, 取引時間の種類, Yahoo!ファイナンス（日本）のページのコード]
+   取引時間の種類（market.js の説明も参照）：
+     JP＝東証 ／ US＝米国市場 ／ HK・CN・KR・TW・IN・UK・DE・EU＝各国の株価指数（現地の取引時間）
+     FX＝為替（平日24時間。土日と FX_HOLIDAYS は休み） ／ FUT＝先物（FX と同じ扱い） ／ C＝暗号資産（24時間・土日も）
+   JP・US・各国の指数は「その日の取引が始まってから、今日のデータが届くまで」前日比を「−」にする。
+   FX・FUT・C はほぼ24時間動いているので、この扱いをしない。 */
 export const INDICES = {
   '^N225': ['日経平均株価', '日経平均 日経225 ニッケイヘイキン Nikkei225 N225', 'JP', '998407.O'],
   '^N500': ['日経500種平均株価', '日経500 Nikkei500', 'JP', '^N500'],
@@ -16,25 +20,34 @@ export const INDICES = {
   '^RUT': ['ラッセル2000指数', 'Russell2000 ラッセル 小型株', 'US', '^RUT'],
   '^VIX': ['VIX指数（恐怖指数）', '恐怖指数 ボラティリティ VIX', 'US', '^VIX'],
   '^TNX': ['米国10年国債利回り', '米国債 10年債 長期金利 金利 TNX', 'US', '^TNX'],
-  '^HSI': ['香港ハンセン指数', 'ハンセン 香港 HangSeng HSI', 'X', '^HSI'],
-  '000001.SS': ['上海総合指数', '上海 中国 Shanghai SSE', 'X', '000001.SS'],
-  '^KS11': ['韓国総合株価指数（KOSPI）', 'KOSPI コスピ 韓国', 'X', '^KS11'],
-  '^TWII': ['台湾加権指数', '台湾 TAIEX 加権', 'X', '^TWII'],
-  '^BSESN': ['インドSENSEX指数', 'センセックス インド SENSEX', 'X', '^BSESN'],
-  '^FTSE': ['英国FTSE100指数', 'FTSE100 フッツィー イギリス 英国', 'X', '^FTSE'],
-  '^GDAXI': ['ドイツDAX指数', 'DAX ダックス ドイツ', 'X', '^GDAXI'],
-  '^STOXX50E': ['ユーロ・ストックス50', 'ユーロストックス EuroStoxx50 欧州', 'X', '^STOXX50E'],
-  'USDJPY=X': ['米ドル/円', 'ドル円 ドル 為替 USDJPY', 'X', 'USDJPY=FX'],
-  'EURJPY=X': ['ユーロ/円', 'ユーロ円 ユーロ 為替 EURJPY', 'X', 'EURJPY=FX'],
+  '^HSI': ['香港ハンセン指数', 'ハンセン 香港 HangSeng HSI', 'HK', '^HSI'],
+  '000001.SS': ['上海総合指数', '上海 中国 Shanghai SSE', 'CN', '000001.SS'],
+  '^KS11': ['韓国総合株価指数（KOSPI）', 'KOSPI コスピ 韓国', 'KR', '^KS11'],
+  '^TWII': ['台湾加権指数', '台湾 TAIEX 加権', 'TW', '^TWII'],
+  '^BSESN': ['インドSENSEX指数', 'センセックス インド SENSEX', 'IN', '^BSESN'],
+  '^FTSE': ['英国FTSE100指数', 'FTSE100 フッツィー イギリス 英国', 'UK', '^FTSE'],
+  '^GDAXI': ['ドイツDAX指数', 'DAX ダックス ドイツ', 'DE', '^GDAXI'],
+  '^STOXX50E': ['ユーロ・ストックス50', 'ユーロストックス EuroStoxx50 欧州', 'EU', '^STOXX50E'],
+  'USDJPY=X': ['米ドル/円', 'ドル円 ドル 為替 USDJPY', 'FX', 'USDJPY=FX'],
+  'EURJPY=X': ['ユーロ/円', 'ユーロ円 ユーロ 為替 EURJPY', 'FX', 'EURJPY=FX'],
   'BTC-USD': ['ビットコイン（米ドル建て）', 'ビットコイン BTC 仮想通貨 暗号資産 Bitcoin', 'C', 'BTC-USD'],
-  'GC=F': ['金先物（NY金）', '金 ゴールド 金価格 Gold', 'X', 'GC=F'],
-  'CL=F': ['WTI原油先物', '原油 WTI 石油 CrudeOil', 'X', 'CL=F'],
+  'NIY=F': ['日経平均先物（円建て・CME）', '日経先物 日経平均先物 先物 Nikkei Futures NIY', 'FUT', 'NIY=F'],
+  'NKD=F': ['日経平均先物（ドル建て・CME）', '日経先物 日経平均先物 ドル建て 先物 NKD', 'FUT', 'NKD=F'],
+  'YM=F': ['NYダウ先物（ミニ）', 'ダウ先物 NYダウ先物 先物 Dow Futures YM', 'FUT', 'YM=F'],
+  'ES=F': ['S&P500先物（ミニ）', 'S&P500先物 SP500先物 エスアンドピー先物 先物 ES', 'FUT', 'ES=F'],
+  'NQ=F': ['ナスダック100先物（ミニ）', 'ナスダック先物 ナスダック100先物 先物 Nasdaq Futures NQ', 'FUT', 'NQ=F'],
+  'RTY=F': ['ラッセル2000先物（ミニ）', 'ラッセル先物 先物 Russell Futures RTY', 'FUT', 'RTY=F'],
+  'GC=F': ['金先物（NY金）', '金 ゴールド 金価格 Gold', 'FUT', 'GC=F'],
+  'CL=F': ['WTI原油先物', '原油 WTI 石油 CrudeOil', 'FUT', 'CL=F'],
 };
 export const isIndex = (code) => Object.prototype.hasOwnProperty.call(INDICES, code);
 // 市場の区分（米国株は英字で始まる。指数・為替などは除く）
 export const isUS = (code) => /^[A-Z]/.test(code) && !isIndex(code);
-// 取引時間の判定に使う市場：JP（東証）／ US（米国）／ X（海外・為替・商品）／ C（暗号資産）
-export const marketOfCode = (code) => (isIndex(code) ? INDICES[code][2] : isUS(code) ? 'US' : 'JP');
+/* 銘柄ごとの取引時間の種類を個別に変えたいときは、ここに書く（例：'7203': 'JP'、'ABCD': 'C'）。
+   ここに無い銘柄は、指数・為替は上の INDICES の種類、米国株は US、日本株は JP。 */
+export const SESSION_OVERRIDES = {};
+// 取引時間の判定に使う種類：JP・US・各国の指数（HK など）・FX・FUT・C
+export const marketOfCode = (code) => SESSION_OVERRIDES[code] || (isIndex(code) ? INDICES[code][2] : isUS(code) ? 'US' : 'JP');
 // Yahoo に問い合わせるときのシンボル（日本株は .T を付ける）
 export const yahooSymbol = (code) => (isIndex(code) || isUS(code) ? code : `${code}.T`);
 // Yahoo!ファイナンス（日本）のページ
@@ -42,7 +55,7 @@ export const yahooJpUrl = (code) => `https://finance.yahoo.co.jp/quote/${encodeU
 export const JP_RE = /^[0-9][0-9A-Z]{3}$/;
 export const US_RE = /^[A-Z][A-Z0-9]{0,5}(-[A-Z])?$/;
 
-import { US, US_TOP } from './us-names.js?v=20261127113228';
+import { US, US_TOP } from './us-names.js?v=20261127151836';
 
 export const US_NAMES = Object.fromEntries(Object.entries(US).map(([k, v]) => [k, v[0]]));
 
@@ -91,7 +104,7 @@ function buildIndex() {
 export function loadDict() {
   if (jp) return Promise.resolve(jp);
   if (!jpLoading) {
-    jpLoading = fetch('data/jp-stocks.json?v=20261127113228')
+    jpLoading = fetch('data/jp-stocks.json?v=20261127151836')
       .then((r) => r.json())
       .then((j) => { jp = j.list; buildIndex(); return jp; })
       .catch(() => { jpLoading = null; return {}; });

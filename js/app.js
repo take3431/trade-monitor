@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261127113228';
-import * as D from './data.js?v=20261127113228';
-import { Stage, themeColors } from './chart.js?v=20261127113228';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, alarmKind, showAlertCard, initAlertCards } from './alerts.js?v=20261127113228';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261127113228';
+import * as M from './market.js?v=20261127151836';
+import * as D from './data.js?v=20261127151836';
+import { Stage, themeColors } from './chart.js?v=20261127151836';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, alarmKind, showAlertCard, initAlertCards } from './alerts.js?v=20261127151836';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261127151836';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -16,6 +16,7 @@ const DEFAULTS = {
   theme: 'dark', colorMode: 'jp', font: 'm', wakeLock: true,
   alertPopup: true, alertSound: true, alertSec: 10,
   chimeJP: true, chimeUS: true, chimeSec: 5,
+  viewMode: 'all', favs: [[], [], [], [], [], [], [], [], [], []],
   closeJP: true, closeUS: true, closeSec: 5,
 };
 // 画面に出さない固定値
@@ -66,6 +67,9 @@ function cleanSettings(raw) {
   s.closeJP = raw.closeJP !== undefined ? !!raw.closeJP : DEFAULTS.closeJP;
   s.closeUS = raw.closeUS !== undefined ? !!raw.closeUS : DEFAULTS.closeUS;
   s.closeSec = int(raw.closeSec, 3, 30, DEFAULTS.closeSec);
+  // 銘柄表示設定（全銘柄・ランダム・日本株・米国株・指数・お気に入り1〜10）とお気に入りの中身
+  s.viewMode = /^(all|random|jp|us|idx|fav([1-9]|10))$/.test(raw.viewMode || '') ? raw.viewMode : 'all';
+  s.favs = Array.from({ length: 10 }, (_, i) => (Array.isArray(raw.favs?.[i]) ? raw.favs[i].filter((c) => typeof c === 'string').slice(0, 999) : []));
   return s;
 }
 function cleanList(raw) {
@@ -103,7 +107,8 @@ const stages = [new Stage($('stageA')), new Stage($('stageB'))];
 let front = 0;
 
 const persistState = () => save(KEY.state, { code: st.code, paused: st.paused });
-const saveList = () => { save(KEY.list, list); if (st.settingsOpen) setTimeout(updateDirty, 0); };
+let listVer = 0; // 登録銘柄・表示設定が変わるたびに増やす（表示する銘柄の一覧を作り直す目印）
+const saveList = () => { listVer++; save(KEY.list, list); if (st.settingsOpen) setTimeout(updateDirty, 0); };
 const neededTfs = () => [...new Set([settings.leftTf, settings.rightTf])];
 
 /* ---------------- 設定の反映 ---------------- */
@@ -210,17 +215,40 @@ function rebuildCharts() {
   stages.forEach((s) => s.build(settings.ind, c));
 }
 
-/* ---------------- 巡回 ---------------- */
-function neighbor(delta, from = st.code) {
-  const n = list.length;
-  if (!n) return null;
-  let i = list.findIndex((x) => x.code === from);
-  if (i < 0) i = delta > 0 ? -1 : 0;
-  for (let k = 1; k <= n; k++) {
-    const j = (((i + delta * k) % n) + n) % n;
-    if (list[j].enabled) return list[j].code;
+/* ---------------- 巡回 ----------------
+   自動切替で表示する銘柄（activeCodes）は「銘柄表示設定」で決まる：
+   全銘柄表示・順番ランダム・日本株のみ・米国株のみ・指数のみ（どれも表示対象ONの銘柄から）、
+   お気に入り1〜10（お気に入りに登録した銘柄。表示対象のON/OFFに関係なく表示）。
+   通信の計画・裏での取り込みも、この銘柄だけを対象にする（表示しない銘柄のために通信しない）。 */
+const VIEW_LABEL = { all: '全銘柄表示', random: '順番ランダム', jp: '日本株のみ', us: '米国株のみ', idx: '指数のみ' };
+const viewLabel = (m) => VIEW_LABEL[m] || `お気に入り${m.slice(3)}`;
+const favCodes = (n) => { const set = new Set(settings.favs[n - 1] || []); return list.filter((x) => set.has(x.code)).map((x) => x.code); };
+let activeCache = { ver: -1, codes: [], pos: new Map() };
+function activeCodes() {
+  if (activeCache.ver === listVer) return activeCache.codes;
+  const mode = settings.viewMode;
+  let codes;
+  if (mode.startsWith('fav')) codes = favCodes(Number(mode.slice(3)));
+  else {
+    let en = list.filter((x) => x.enabled);
+    if (mode === 'jp') en = en.filter((x) => !isUS(x.code) && !isIndex(x.code));
+    else if (mode === 'us') en = en.filter((x) => isUS(x.code));
+    else if (mode === 'idx') en = en.filter((x) => isIndex(x.code));
+    codes = en.map((x) => x.code);
+    if (mode === 'random') {
+      for (let i = codes.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [codes[i], codes[j]] = [codes[j], codes[i]]; }
+    }
   }
-  return null;
+  activeCache = { ver: listVer, codes, pos: new Map(codes.map((c, i) => [c, i])) };
+  return codes;
+}
+function neighbor(delta, from = st.code) {
+  const codes = activeCodes();
+  const n = codes.length;
+  if (!n) return null;
+  let i = activeCache.pos.get(from);
+  if (i == null) i = delta > 0 ? -1 : 0;
+  return codes[(((i + delta) % n) + n) % n];
 }
 // 次に表示する銘柄から n 件
 function upcomingFrom(n) {
@@ -234,18 +262,23 @@ function upcomingFrom(n) {
   return out;
 }
 const userIsTouching = () => Date.now() < st.touchUntil;
-function enabledCount() { return list.filter((x) => x.enabled).length; }
+// 自動切替で表示する銘柄の数（通信の計画もこの数で立てる）
+function enabledCount() { return activeCodes().length; }
 const marketOf = marketOfCode;
 // 価格を小数2桁で扱うもの（米国株・指数・為替）
 const dec2 = (code) => isUS(code) || isIndex(code);
-function marketsInList() { return [...new Set(list.filter((x) => x.enabled).map((x) => marketOf(x.code)))]; }
+function marketsInList() { return [...new Set(activeCodes().map((c) => marketOf(c)))]; }
 function posText(code) {
-  const en = list.filter((x) => x.enabled);
-  const i = en.findIndex((x) => x.code === code);
-  return i >= 0 ? `${i + 1} / ${en.length}` : '切替対象外';
+  const codes = activeCodes();
+  const i = activeCache.pos.get(code);
+  const head = settings.viewMode === 'all' ? '' : `${viewLabel(settings.viewMode)}　`;
+  return i != null ? `${head}${i + 1} / ${codes.length}` : '切替対象外';
 }
 
 function showEmpty(empty) {
+  const all = settings.viewMode === 'all';
+  $('emptyMain').textContent = all ? '表示対象の銘柄がありません。' : `「${viewLabel(settings.viewMode)}」に当てはまる銘柄がありません。`;
+  $('emptySub').textContent = all ? '右上のメニュー（≡）から銘柄を登録し、「表示対象」をONにしてください。' : '右上のメニュー（≡）→「銘柄表示設定」で、表示する銘柄を選び直してください。';
   $('emptyMsg').hidden = !empty;
   $('monitor').classList.toggle('is-empty', empty);
 }
@@ -305,7 +338,48 @@ async function show(code, { nav = false, force = false, retry = false, auto = fa
 }
 
 function render(stage, item, entries, keepRange, loading = false) {
-  stage.render(item, entries, settings, { pos: posText(item.code), keepRange, loading });
+  stage.render(item, entries, settings, { pos: posText(item.code), keepRange, loading, status: quoteStatus(item.code, entries.quote) });
+}
+
+/* ---------------- 前日比の表示の状態 ----------------
+   ・pending（「−」）：その銘柄の取引日の取引が始まったのに、まだ今日のデータが届いていない（東証は約20分遅れ）。
+     日本株・米国株・指数が対象。為替・先物・暗号資産（ほぼ24時間動くもの）は対象外（取引時間の種類で決まる）。
+   ・special（「特」）：日本株で、9:30を過ぎてから取得したのに今日の取引がまだ無く、ほかの日本株には今日の取引がある
+     （特別買い気配・特別売り気配、または売買停止の可能性）。今日の株価が届いたら、ふつうの前日比に戻る。
+   ・limit（「高」「安」）：日本株で、現在値が値幅制限の上限・下限（ストップ高・ストップ安）。 */
+let tradedCache = { at: 0, set: new Set() };
+function jpTradedToday(now) {
+  if (now - tradedCache.at < 5000) return tradedCache.set;
+  const set = new Set();
+  for (const [code, q] of Object.entries(quotes)) {
+    if (q?.time && marketOf(code) === 'JP' && !isIndex(code) && !M.awaitingToday('JP', q.time, now) && M.dayKey(q.time * 1000) === M.dayKey(now)) set.add(code);
+  }
+  tradedCache = { at: now, set };
+  return set;
+}
+function quoteStatus(code, q, now = Date.now()) {
+  if (!q || q.price == null) return null;
+  const m = marketOf(code);
+  const jpStock = m === 'JP' && !isIndex(code);
+  if (M.awaitingToday(m, q.time, now)) {
+    if (jpStock) {
+      const ready = M.jpOpenToday(now) + 30 * 60e3; // 9:30（データは約20分遅れなので、9:10ごろまでの取引が届いているはず）
+      const traded = jpTradedToday(now);
+      const others = traded.size - (traded.has(code) ? 1 : 0);
+      if (now >= ready && (q.fetchedAt || 0) >= ready && others > 0) return { state: 'special' };
+    }
+    return { state: 'pending' };
+  }
+  let limit = null;
+  if (jpStock && q.chg != null) {
+    const prev = q.price - q.chg;
+    if (prev > 0) {
+      const w = M.jpLimitWidth(prev);
+      if (q.price >= prev + w - 1e-6) limit = 'high';
+      else if (q.price <= prev - w + 1e-6) limit = 'low';
+    }
+  }
+  return { state: 'ok', limit };
 }
 
 async function present(item, entries, seq, loading = false) {
@@ -365,7 +439,7 @@ function emergencyTick(now) {
   const done = load(EMERG_KEY, []) || [];
   const slot = M.emergencySlots(now).find((s) => !done.includes(s.id));
   if (!slot) return;
-  const codes = list.filter((x) => x.enabled && (slot.market === 'US' ? marketOf(x.code) === 'US' : marketOf(x.code) !== 'US')).map((x) => x.code);
+  const codes = activeCodes().filter((c) => (slot.market === 'US' ? marketOf(c) === 'US' : marketOf(c) !== 'US'));
   emergBusy = true;
   D.emergencyRefresh(codes, slot.since).then((ok) => {
     if (ok) save(EMERG_KEY, [...done, slot.id].slice(-20));
@@ -421,7 +495,7 @@ async function warmTick(now) {
   warmAt = now;
   const tfs = neededTfs();
   const ok = (code) => { const f = D.failureOf(code); return (!f || now > f.until) && !D.noDataToday(code) && !D.gaveUpToday(code); };
-  const en = list.filter((x) => x.enabled && ok(x.code));
+  const en = activeCodes().filter(ok).map((code) => ({ code }));
   if (!en.length) return;
   warmBusy = true;
   try {
@@ -454,7 +528,7 @@ function updateStatus(now = Date.now()) {
   const dot = $('statusDot');
   const err = st.lastError;
   dot.className = `dot ${err ? 'err' : ph.open ? 'ok' : 'closed'}${loading ? ' busy' : ''}`;
-  $('statusText').textContent = `${m === 'US' ? '米国' : m === 'X' ? '海外・為替' : m === 'C' ? '暗号資産' : '東証'}・${ph.open ? `接続中（${ph.label}）` : ph.label}`;
+  $('statusText').textContent = `${M.MARKET_LABEL[m] || '東証'}・${ph.open ? `接続中（${ph.label}）` : ph.label}`;
   const e = stages[front].entries?.[settings.leftTf] || stages[front].entries?.[settings.rightTf];
   const ns = D.netStats();
   const b = D.budgetStatus();
@@ -535,7 +609,7 @@ function closeSettings(apply = false) {
   $('settings').hidden = true;
   st.remaining = settings.interval;
   if (prev !== next) rebuildCharts();
-  const cur = list.find((x) => x.code === st.code);
+  const cur = activeCodes().includes(st.code) ? list.find((x) => x.code === st.code) : null;
   const code = cur ? cur.code : neighbor(1);
   if (code) { stages[front].code = prev !== next ? null : stages[front].code; show(code); } else showEmpty(true);
   if (settings.wakeLock) keepAwake(); else if (wake) { wake.release(); wake = null; }
@@ -728,7 +802,7 @@ function saveQuotes() {
     save(QUOTE_KEY, quotes);
   }, 1500);
 }
-const slimQuote = (q) => ({ price: q.price, chg: q.chg ?? null, pct: q.pct ?? null, time: q.time ?? null });
+const slimQuote = (q) => ({ price: q.price, chg: q.chg ?? null, pct: q.pct ?? null, time: q.time ?? null, fetchedAt: q.fetchedAt ?? null });
 // 控えに無い（または前日比の無い旧版の控えしかない）銘柄だけ、保存済みのデータから1件ずつ読む（通信しない）
 async function ensureQuote(code) {
   const q = quotes[code];
@@ -865,19 +939,23 @@ function tileHtml(x) {
   const q = quotes[x.code];
   const us = isUS(x.code);
   const idx = isIndex(x.code);
-  const pct = q?.pct;
+  const qs = quoteStatus(x.code, q);
+  const waiting = qs?.state === 'pending' || qs?.state === 'special';
+  const pct = waiting ? null : q?.pct;
   const dir = pct == null ? '' : pct > 0 ? 'up' : pct < 0 ? 'down' : '';
   // 色の濃さ：前日比 0〜5% を 8〜38% の濃さに（5%以上は同じ）
   const heat = dir ? 8 + (Math.min(Math.abs(pct), 5) / 5) * 30 : 0;
   const sign = (v) => (v > 0 ? '+' : v < 0 ? '−' : '±');
-  const chg = q?.chg == null ? '' : `${sign(q.chg)}${us || idx ? fmtNum(Math.abs(q.chg), true) : fmtNum(Math.abs(q.chg))}`;
+  const chg = qs?.state === 'pending' ? '−' : qs?.state === 'special' ? '<b class="ov-sp">特</b>'
+    : q?.chg == null ? '' : `${sign(q.chg)}${us || idx ? fmtNum(Math.abs(q.chg), true) : fmtNum(Math.abs(q.chg))}`;
+  const lim = qs?.limit ? `<b class="ov-lim ${qs.limit === 'high' ? 'lim-high' : 'lim-low'}">${qs.limit === 'high' ? '高' : '安'}</b>` : '';
   const pctTxt = pct == null ? '' : `${sign(pct)}${Math.abs(pct).toFixed(2)}%`;
   const flags = `${x.alertOn ? '<svg class="ico" aria-label="アラート中"><use href="#i-bell"/></svg>' : ''}${idx ? '<span class="ov-badge">指数</span>' : us ? '<span class="ov-badge">米</span>' : ''}${x.enabled ? '' : '<span class="ov-badge">表示OFF</span>'}`;
   return `<button type="button" class="ov-tile ${dir ? `t-${dir}` : ''}${x.enabled ? '' : ' off'}" data-code="${esc(x.code)}" style="--heat:${heat.toFixed(0)}%">
     <div class="ov-top"><span>${esc(x.code)}</span><span class="ov-flags">${flags}</span></div>
     <div class="ov-name">${esc(x.name || '（名称未設定）')}</div>
     <div class="ov-price">${q ? ovMoney(q.price, us, idx) : '<span class="ov-empty">データ未取得</span>'}${q && !us && !idx ? '<small>円</small>' : ''}</div>
-    <div class="ov-chg"><span class="v">${chg}${pctTxt ? ` (${pctTxt})` : ''}</span><span class="ov-time">${q?.time ? M.fmtStamp(q.time * 1000) : ''}</span></div>
+    <div class="ov-chg"><span class="v">${chg}${pctTxt ? ` (${pctTxt})` : ''}${lim}</span><span class="ov-time">${q?.time ? M.fmtStamp(q.time * 1000) : ''}</span></div>
   </button>`;
 }
 function renderOverview() {
@@ -913,12 +991,107 @@ $('ovGrid').addEventListener('click', (e) => {
   closeSettings(false);
 });
 
+/* ---------------- 銘柄表示設定・お気に入り ----------------
+   表示設定とお気に入りはその場で保存する（銘柄の登録・並び替えと同じ扱い。× で戻るだけで反映）。 */
+const viewDlg = $('viewDialog');
+const favDlg = $('favDialog');
+function renderViewButton() {
+  $('vmCurrent').textContent = settings.viewMode === 'all' ? '' : `（${viewLabel(settings.viewMode)}）`;
+}
+function renderViewDialog() {
+  $('vmModes').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.mode === settings.viewMode));
+  $('vmFavs').innerHTML = Array.from({ length: 10 }, (_, i) => {
+    const n = i + 1;
+    const cnt = favCodes(n).length;
+    const on = settings.viewMode === `fav${n}`;
+    return `<button type="button" class="vm-fav${cnt ? ' reg' : ''}${on ? ' on' : ''}" data-fav="${n}">お気に入り${n}<small>${cnt ? `${cnt}銘柄` : '未登録'}</small></button>`;
+  }).join('');
+}
+function setViewMode(mode) {
+  settings.viewMode = mode;
+  save(KEY.settings, settings);
+  listVer++;
+  applyData();
+  renderViewButton();
+  renderViewDialog();
+  toast(`「${viewLabel(mode)}」で表示します${st.settingsOpen ? '（設定画面を閉じると切り替わります）' : ''}`);
+}
+$('btnViewMode').addEventListener('click', () => { renderViewDialog(); viewDlg.showModal(); });
+$('btnViewClose').addEventListener('click', () => viewDlg.close());
+viewDlg.addEventListener('click', (e) => { if (e.target === viewDlg) viewDlg.close(); });
+$('vmModes').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-mode]');
+  if (!b) return;
+  setViewMode(b.dataset.mode);
+  viewDlg.close();
+});
+$('vmFavs').addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-fav]');
+  if (!b) return;
+  const n = Number(b.dataset.fav);
+  const cnt = favCodes(n).length;
+  if (!cnt) { openFavEditor(n); return; }
+  const r = await ask(`お気に入り${n}を表示しますか？（${cnt}銘柄）`, { ok: 'はい', alt: '銘柄設定' });
+  if (r === true) { setViewMode(`fav${n}`); viewDlg.close(); } else if (r === 'alt') openFavEditor(n);
+});
+
+let favEditing = 0;
+function favUpdateCount() {
+  const n = $('favList').querySelectorAll('input:checked').length;
+  $('favCount').textContent = `${n} / ${list.length}銘柄を選択中`;
+}
+function openFavEditor(n) {
+  favEditing = n;
+  const sel = new Set(settings.favs[n - 1] || []);
+  $('favTitle').textContent = `お気に入り${n}の銘柄`;
+  $('favList').innerHTML = list.map((x) => `<label class="fav-row"><input type="checkbox" value="${esc(x.code)}"${sel.has(x.code) ? ' checked' : ''}>
+    <span class="num code">${esc(x.code)}</span><span class="nm">${esc(x.name || '（名称未設定）')}</span>${isIndex(x.code) ? '<span class="tag idx">指数</span>' : isUS(x.code) ? '<span class="tag">米</span>' : ''}</label>`).join('')
+    || '<p class="muted">登録銘柄がありません。先に「新規登録」で銘柄を登録してください。</p>';
+  $('favClear').hidden = !sel.size;
+  favUpdateCount();
+  favDlg.showModal();
+}
+$('favList').addEventListener('change', favUpdateCount);
+$('favAll').addEventListener('click', () => { $('favList').querySelectorAll('input').forEach((i) => { i.checked = true; }); favUpdateCount(); });
+$('favNone').addEventListener('click', () => { $('favList').querySelectorAll('input').forEach((i) => { i.checked = false; }); favUpdateCount(); });
+$('favCancel').addEventListener('click', () => favDlg.close());
+$('btnFavClose').addEventListener('click', () => favDlg.close());
+function saveFav(n, codes) {
+  settings.favs[n - 1] = codes;
+  if (!codes.length && settings.viewMode === `fav${n}`) settings.viewMode = 'all'; // 空にしたら全銘柄表示に戻す
+  save(KEY.settings, settings);
+  listVer++;
+  applyData();
+  renderViewButton();
+  renderViewDialog();
+}
+$('favSave').addEventListener('click', async () => {
+  const n = favEditing;
+  const codes = [...$('favList').querySelectorAll('input:checked')].map((i) => i.value);
+  const was = favCodes(n).length;
+  saveFav(n, codes);
+  favDlg.close();
+  if (!codes.length) { toast(`お気に入り${n}の登録を消しました`); return; }
+  if (settings.viewMode === `fav${n}`) { toast(`お気に入り${n}を更新しました（${codes.length}銘柄）`); return; }
+  const r = await ask(`お気に入り${n}に${codes.length}銘柄を${was ? '登録し直しました' : '登録しました'}。お気に入り${n}を表示しますか？`, { ok: 'はい', cancel: 'あとで' });
+  if (r === true) { setViewMode(`fav${n}`); viewDlg.close(); }
+});
+$('favClear').addEventListener('click', async () => {
+  const n = favEditing;
+  if (!(await ask(`お気に入り${n}の登録を消しますか？`, { ok: '消す', danger: true }))) return;
+  saveFav(n, []);
+  favDlg.close();
+  toast(`お気に入り${n}の登録を消しました`);
+});
+renderViewButton();
+
 /* ---------------- アプリ内の確認画面 ----------------
    ブラウザ標準の確認画面（confirm / prompt / alert）は Android で全画面表示を解除してしまうため使わない。
    ask(文言) → OK なら true / キャンセルなら false
    ask(文言, { input: 初期値 }) → 入力した文字 / キャンセルなら null
    ask(文言, { alert: true }) → OK ボタンだけ */
-function ask(msg, { input = null, ok = 'OK', danger = false, alert: only = false, rows = 1 } = {}) {
+// ask(文言, { ok: 'はい', alt: '銘柄設定' }) → 'OK' なら true ／ alt のボタンなら 'alt' ／ キャンセルなら false
+function ask(msg, { input = null, ok = 'OK', danger = false, alert: only = false, rows = 1, alt = null, cancel = 'キャンセル' } = {}) {
   const d = $('askDialog');
   $('askMsg').textContent = msg;
   const inp = $('askInput');
@@ -928,10 +1101,14 @@ function ask(msg, { input = null, ok = 'OK', danger = false, alert: only = false
   $('askOk').textContent = ok;
   $('askOk').classList.toggle('danger-fill', danger);
   $('askCancel').hidden = only;
+  $('askCancel').textContent = cancel;
+  $('askAlt').hidden = !alt;
+  $('askAlt').textContent = alt || '';
   d.showModal();
   if (input != null) setTimeout(() => { inp.focus(); inp.select(); }, 50);
   return new Promise((resolve) => {
-    const done = (v) => { d.close(); $('askForm').onsubmit = null; $('askCancel').onclick = null; d.oncancel = null; resolve(v); };
+    const done = (v) => { d.close(); $('askForm').onsubmit = null; $('askCancel').onclick = null; $('askAlt').onclick = null; d.oncancel = null; resolve(v); };
+    $('askAlt').onclick = () => done('alt');
     $('askForm').onsubmit = (e) => { e.preventDefault(); done(input != null ? inp.value : true); };
     $('askCancel').onclick = () => done(input != null ? null : false);
     d.oncancel = (e) => { e.preventDefault(); done(input != null ? null : false); };
@@ -1238,7 +1415,7 @@ applyData();
 rebuildCharts();
 stages[0].root.classList.add('active');
 {
-  const first = list.find((x) => x.code === st.code && x.enabled) ? st.code : neighbor(1);
+  const first = activeCache.pos.has(st.code) || activeCodes().includes(st.code) ? st.code : neighbor(1);
   if (first) show(first); else showEmpty(true);
 }
 updateStatus();
