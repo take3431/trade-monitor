@@ -9,8 +9,8 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261127151836';
-import { yahooSymbol, marketOfCode } from './names.js?v=20261127151836';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261127164219';
+import { yahooSymbol, marketOfCode } from './names.js?v=20261127164219';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = yahooSymbol;
@@ -888,6 +888,16 @@ function refreshIntraday(code, prio) {
 const kindOf = (tf) => (tf === '5m' ? '5m' : 'base');
 
 // 保存済みデータ（古くても）をすぐ返す
+// 保存済みのデータだけを読む（通信しない。表示用のメモリの控えも入れ替えない）。全銘柄一覧のチャート用
+export async function peekBars(code, tf) {
+  const k = keyOf(code, 'base');
+  const base = mem.has(k) ? mem.get(k) : cfg.demo ? null : await idb('readonly', (s) => s.get(k));
+  if (!base?.bars?.length) return null;
+  if (tf === '1wk') return base.wk || aggregate(base.bars, weekKey);
+  if (tf === '1mo') return base.mo || aggregate(base.bars, monthKey);
+  return base.bars;
+}
+
 export async function cachedSet(code, tfs) {
   const entries = {};
   for (const tf of tfs) entries[tf] = deriveEntry(code, await getStored(code, kindOf(tf)), tf === '5m' ? '1d' : tf);

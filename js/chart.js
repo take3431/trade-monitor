@@ -1,8 +1,8 @@
 // 表示レイヤー（ステージ）とチャート描画
 // ステージを2枚重ねておき、非表示側に描画してから切り替えることでチラつきを防ぐ。
-import { TF } from './data.js?v=20261127151836';
-import { isUS, isIndex, yahooJpUrl } from './names.js?v=20261127151836';
-import { fmtStamp } from './market.js?v=20261127151836';
+import { TF } from './data.js?v=20261127164219';
+import { isUS, isIndex, yahooJpUrl } from './names.js?v=20261127164219';
+import { fmtStamp } from './market.js?v=20261127164219';
 
 const LC = window.LightweightCharts;
 const JST = 9 * 3600;
@@ -62,6 +62,20 @@ function bollinger(bars, n = 20, k = 2) {
   return { up, mid, lo };
 }
 
+// 保存データ → チャート用の足。数値でない値の足と、時刻が前の足以下の足（重複・逆順）は除く
+// （Lightweight Charts は時刻の重複・逆順があると例外を出してチャートが描けなくなるため）
+function toLcBars(raw) {
+  const out = [];
+  let prev = -Infinity;
+  for (const b of raw) {
+    if (!b || !Number.isFinite(b[0]) || ![b[1], b[2], b[3], b[4]].every(Number.isFinite)) continue;
+    const time = b[0] + JST;
+    const bar = { time, open: b[1], high: b[2], low: b[3], close: b[4], volume: Number.isFinite(b[5]) ? b[5] : 0 };
+    if (time > prev) { out.push(bar); prev = time; } else if (time === prev) out[out.length - 1] = bar; // 同じ時刻は新しい方
+  }
+  return out;
+}
+
 const pad = (n) => String(n).padStart(2, '0');
 function tickFmt(time, type) {
   const d = new Date(time * 1000);
@@ -72,6 +86,10 @@ function tickFmt(time, type) {
     default: return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
   }
 }
+
+// テクニカル指標の設定（移動平均の期間・ボリンジャーバンドの期間とσ）
+export const TA_DEFAULT = { ma: { '5m': [5, 25], '1d': [5, 25], '1wk': [13, 26], '1mo': [12, 24] }, bb: { n: 20, k: 2 } };
+const taOf = (ta, tf) => ({ ma: ta?.ma?.[tf] || TF[tf].ma, bb: ta?.bb || TA_DEFAULT.bb });
 
 class Pane {
   constructor(card) {
@@ -136,14 +154,16 @@ class Pane {
     this.code = null;
   }
 
-  setData(entry, tf, label, visibleBars, keepRange, loading = false) {
+  setData(entry, tf, label, visibleBars, keepRange, loading = false, ta = null) {
     const t = TF[tf];
+    const p = taOf(ta, tf);
+    const taKey = `${p.ma.join(',')}|${p.bb.n},${p.bb.k}`;
     this.titleEl.textContent = t.title;
     const raw = entry?.bars || [];
     this.msg.hidden = raw.length > 0;
     this.msg.textContent = loading ? 'チャートデータ読込中…' : 'チャートデータ未取得（自動で再取得します）';
     // 同じ銘柄・同じ足種・同じデータなら、描き直さずに表示範囲だけ整える（切替のたびの無駄な計算を省く）
-    if (raw.length && raw === this.raw && this.tf === tf && this.code === label) {
+    if (raw.length && raw === this.raw && this.tf === tf && this.code === label && this.taKey === taKey) {
       if (!keepRange) {
         this.resetView();
         const n = this.bars.length;
@@ -154,10 +174,12 @@ class Pane {
       return;
     }
     this.raw = raw;
-    const bars = raw.map((b) => ({ time: b[0] + JST, open: b[1], high: b[2], low: b[3], close: b[4], volume: b[5] }));
+    this.taKey = taKey;
+    this.bb = p.bb;
+    const bars = toLcBars(raw);
     this.bars = bars;
     this.label = `${label}, ${t.short}, ${this.exch || 'TSE'}`;
-    this.maLen = t.ma;
+    this.maLen = p.ma;
     this.chart.applyOptions({ timeScale: { timeVisible: tf === '5m', secondsVisible: false } });
 
     const s = this.s;
@@ -168,12 +190,12 @@ class Pane {
     }
     this.ma = null;
     if (s.ma1) {
-      const m1 = sma(bars, t.ma[0]), m2 = sma(bars, t.ma[1]);
+      const m1 = sma(bars, p.ma[0]), m2 = sma(bars, p.ma[1]);
       s.ma1.setData(m1); s.ma2.setData(m2);
       this.ma = [new Map(m1.map((x) => [x.time, x.value])), new Map(m2.map((x) => [x.time, x.value]))];
     }
     if (s.bbU) {
-      const b = bollinger(bars);
+      const b = bollinger(bars, p.bb.n, p.bb.k);
       s.bbU.setData(b.up); s.bbM.setData(b.mid); s.bbL.setData(b.lo);
     }
 
@@ -213,7 +235,7 @@ class Pane {
         html += `<span class="lg-ma1">MA${this.maLen[0]} ${fmtPrice(v1 != null ? Math.round(v1 * 10) / 10 : null)}</span>`;
         html += `<span class="lg-ma2">MA${this.maLen[1]} ${fmtPrice(v2 != null ? Math.round(v2 * 10) / 10 : null)}</span>`;
       }
-      if (this.s.bbU) html += '<span class="lg-bb">BB(20,2σ)</span>';
+      if (this.s.bbU) html += `<span class="lg-bb">BB(${this.bb?.n ?? 20},${this.bb?.k ?? 2}σ)</span>`;
     }
     this.legend.innerHTML = html;
   }
@@ -331,7 +353,41 @@ export class Stage {
     this.panes.forEach((p) => { p.exch = idx ? 'INDEX' : isUs ? 'US' : 'TSE'; });
     this.fitTitle();
     const label = `${item.code} ${item.name || ''}`.trim();
-    this.panes[0].setData(entries[settings.leftTf], settings.leftTf, label, settings.leftBars, keepRange, loading);
-    this.panes[1].setData(entries[settings.rightTf], settings.rightTf, label, settings.rightBars, keepRange, loading);
+    // 片方のチャートで想定外のエラーが出ても、もう片方と画面の更新は止めない
+    [[settings.leftTf, settings.leftBars], [settings.rightTf, settings.rightBars]].forEach(([tf, n], i) => {
+      const pane = this.panes[i];
+      try { pane.setData(entries[tf], tf, label, n, keepRange, loading, settings.ta); }
+      catch (err) { console.error(err); pane.raw = null; pane.msg.hidden = false; pane.msg.textContent = 'チャートを描けませんでした（次の更新で描き直します）'; }
+    });
   }
+}
+
+/* 全銘柄一覧の「チャート一覧」用の小さなチャート（保存済みデータだけで描く）。
+   触っても動かない（画面のスクロールを邪魔しない）。見えなくなったら destroy で消す。 */
+export function miniChart(host, bars, tf, c, ind, ta) {
+  const ch = LC.createChart(host, {
+    autoSize: true,
+    layout: { background: { type: 'solid', color: c.bg }, textColor: c.text, fontSize: 10, attributionLogo: false,
+      fontFamily: '-apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif' },
+    grid: { vertLines: { visible: false }, horzLines: { color: c.grid } },
+    rightPriceScale: { borderColor: c.border, scaleMargins: { top: 0.08, bottom: 0.06 } },
+    timeScale: { borderColor: c.border, rightOffset: 2, tickMarkFormatter: tickFmt },
+    crosshair: { mode: 2, vertLine: { visible: false }, horzLine: { visible: false } },
+    handleScroll: false, handleScale: false,
+    localization: { locale: 'ja-JP', priceFormatter: (p) => (p < 0 ? '' : fmtPrice(p)) },
+  });
+  const data = toLcBars(bars);
+  const cs = ch.addCandlestickSeries({
+    upColor: c.up, downColor: c.down, borderUpColor: c.up, borderDownColor: c.down,
+    wickUpColor: c.up, wickDownColor: c.down, priceLineVisible: false, lastValueVisible: true,
+  });
+  cs.setData(data);
+  if (ind?.ma) {
+    const p = taOf(ta, tf);
+    const o = { lineWidth: 1, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false };
+    ch.addLineSeries({ ...o, color: c.ma1 }).setData(sma(data, p.ma[0]));
+    ch.addLineSeries({ ...o, color: c.ma2 }).setData(sma(data, p.ma[1]));
+  }
+  ch.timeScale().fitContent();
+  return { destroy: () => ch.remove() };
 }

@@ -329,7 +329,7 @@ body.locked > *:not(#gate):not(svg) { visibility: hidden; }
 .settings.alert-mode :is(.c-sw, #mainPanel, .list-hint, .del) { display: none; }
 .icon-btn.clr { color: var(--muted); }
 .icon-btn.clr:disabled { opacity: .3; }
-#btnAlertMode[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface2)); box-shadow: 0 0 0 1px var(--accent); }
+#btnAlertMode[aria-pressed="true"], #btnOvChart[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface2)); box-shadow: 0 0 0 1px var(--accent); }
 .c-price { width: 6.5rem; font-variant-numeric: tabular-nums; }
 .c-target { width: 10rem; }
 .c-alert { width: 5.5rem; text-align: center; }
@@ -382,7 +382,8 @@ body.in-settings .alert-stack { top: auto; right: auto; left: calc(1.2rem + env(
 .ov-head h2 { margin: 0; font-size: 1.25rem; }
 .ov-sum { display: flex; gap: .9rem; font-size: .9rem; font-variant-numeric: tabular-nums; }
 .ov-sum b { font-size: 1.05rem; }
-.ov-tools { display: flex; align-items: center; gap: .6rem; margin-left: auto; }
+.ov-tools { display: flex; align-items: center; gap: .6rem; margin-left: auto; flex-wrap: wrap; }
+.ov-tools .btn { white-space: nowrap; }
 .ov-grid {
   flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; padding: .7rem;
   display: grid; grid-template-columns: repeat(auto-fill, minmax(12.5rem, 1fr)); gap: .6rem; align-content: start;
@@ -419,6 +420,31 @@ body.in-settings .alert-stack { top: auto; right: auto; left: calc(1.2rem + env(
 .q-flag.lim-high { background: var(--up); }
 .q-flag.lim-low { background: var(--down); }
 .sym-quote .q-flag { margin-left: -.2rem; }
+
+/* ===== 全銘柄一覧のチャート一覧（2列） ===== */
+.ov-ctools { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; padding: .5rem .8rem; border-bottom: 1px solid var(--border); }
+.ov-charts { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; padding: .7rem; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-auto-rows: max-content; gap: .6rem; align-content: start; }
+.ov-charts[hidden], .ov-grid[hidden] { display: none; }
+.oc-card { border: 1px solid var(--border); border-radius: 10px; background: var(--surface2); overflow: hidden; display: flex; flex-direction: column; text-align: left; padding: 0; min-width: 0; }
+.oc-head { display: flex; align-items: baseline; gap: .5rem; padding: .35rem .6rem; font-size: .85rem; min-width: 0; }
+.oc-head .oc-code { font-weight: 700; font-variant-numeric: tabular-nums; flex: none; }
+.oc-head .oc-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-head .oc-pct { flex: none; font-weight: 700; font-variant-numeric: tabular-nums; }
+.oc-head .oc-pct.up { color: var(--up); }
+.oc-head .oc-pct.down { color: var(--down); }
+.oc-box { height: 13rem; flex: none; position: relative; background: var(--chart-bg); }
+.oc-box .lc { position: absolute; inset: 0; }
+.oc-msg { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: .8rem; text-align: center; padding: .5rem; }
+@media (max-width: 560px) { .oc-box { height: 10rem; } }
+/* テクニカルの詳細設定 */
+.ta-set { margin-top: .5rem; font-size: .85rem; }
+.ta-set summary { cursor: pointer; color: var(--accent); padding: .2rem 0; }
+.ta-grid { border-collapse: collapse; margin: .4rem 0; }
+.ta-grid th, .ta-grid td { padding: .15rem .3rem; font-weight: 400; text-align: left; white-space: nowrap; }
+.ta-grid thead th { font-size: .75rem; color: var(--muted); }
+.ta-set input { width: 3.6rem; height: 1.8rem; min-height: 0; padding: .1rem .35rem; border-radius: 6px; border: 1px solid var(--border2); background: var(--surface2); color: var(--text); font-size: .85rem; }
+.ta-grid th, .ta-grid td { padding: .1rem .3rem; }
+.ta-bb { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
 
 /* ===== 銘柄表示設定・お気に入り ===== */
 .vm-current { margin-left: .2rem; font-size: .75rem; color: var(--accent); }

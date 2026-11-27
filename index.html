@@ -11,15 +11,15 @@
      外部への通信に、このページの URL（参照元）を付けない。 -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://r.jina.ai https://api.allorigins.win https://api.codetabs.com; object-src 'none'; base-uri 'self'; form-action 'self'">
 <meta name="referrer" content="no-referrer">
-<meta name="app-version" content="20261127151836">
+<meta name="app-version" content="20261127164219">
 <meta name="theme-color" content="#0d1117">
 <title>TRADE MONITOR</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-180.png">
-<link rel="stylesheet" href="css/style.css?v=20261127151836">
-<script src="vendor/lightweight-charts.standalone.production.js?v=20261127151836"></script>
-<script type="module" src="js/gate.js?v=20261127151836"></script>
+<link rel="stylesheet" href="css/style.css?v=20261127164219">
+<script src="vendor/lightweight-charts.standalone.production.js?v=20261127164219"></script>
+<script type="module" src="js/gate.js?v=20261127164219"></script>
 </head>
 <body class="locked">
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -89,11 +89,17 @@
       <div class="ov-sum" id="ovSum"></div>
       <div class="ov-tools">
         <div class="seg sm" id="segOvSort"><button data-v="list">登録順</button><button data-v="up">値上がり順</button><button data-v="down">値下がり順</button></div>
+        <button class="btn sm" id="btnOvChart" type="button" aria-pressed="false"><svg class="ico"><use href="#i-grid"/></svg><span>チャート一覧</span></button>
         <button class="btn" id="btnOvBack" type="button"><svg class="ico"><use href="#i-back"/></svg><span>戻る</span></button>
       </div>
     </div>
+    <div class="ov-ctools" id="ovChartTools" hidden>
+      <div class="seg sm" id="segOvTf"><button data-v="1mo">月足</button><button data-v="1wk">週足</button><button data-v="1d">日足</button></div>
+      <span class="muted small" id="ovChartNote">保存済みのデータだけで描きます（この画面では通信しません）</span>
+    </div>
     <div class="ov-grid" id="ovGrid"></div>
-    <p class="hint muted">タイルを押すと、その銘柄のチャートを表示します ／ 色の濃さは前日比の大きさ</p>
+    <div class="ov-charts" id="ovCharts" hidden></div>
+    <p class="hint muted" id="ovHint">タイルを押すと、その銘柄のチャートを表示します ／ 色の濃さは前日比の大きさ</p>
   </section>
   <section class="card list-card">
     <div class="list-head">
@@ -101,6 +107,7 @@
       <div class="list-actions">
         <button class="btn" id="btnViewMode"><svg class="ico"><use href="#i-eye"/></svg><span>銘柄表示設定</span><small id="vmCurrent" class="vm-current"></small></button>
         <button class="btn" id="btnOverview"><svg class="ico"><use href="#i-grid"/></svg><span>全銘柄一覧</span></button>
+        <button class="btn" id="btnOrder"><svg class="ico"><use href="#i-grip"/></svg><span>順番設定</span><small id="odCurrent" class="vm-current"></small></button>
         <button class="btn" id="btnAlertMode" aria-pressed="false"><svg class="ico"><use href="#i-bell"/></svg><span>アラート設定</span></button>
         <button class="btn" id="btnAdd"><svg class="ico"><use href="#i-plus"/></svg><span>新規登録</span></button>
       </div>
@@ -144,6 +151,21 @@
           <label><input type="checkbox" id="chkBb">ボリンジャー</label>
           <label><input type="checkbox" id="chkVol">出来高</label>
         </div>
+        <details class="ta-set" id="taSet">
+          <summary>テクニカルの詳細設定</summary>
+          <table class="ta-grid">
+            <thead><tr><th></th><th>移動平均 短期</th><th>移動平均 長期</th></tr></thead>
+            <tbody>
+              <tr><th>5分足</th><td><input type="number" id="taMa5m0" min="2" max="300" inputmode="numeric"></td><td><input type="number" id="taMa5m1" min="2" max="300" inputmode="numeric"></td></tr>
+              <tr><th>日足</th><td><input type="number" id="taMa1d0" min="2" max="300" inputmode="numeric"></td><td><input type="number" id="taMa1d1" min="2" max="300" inputmode="numeric"></td></tr>
+              <tr><th>週足</th><td><input type="number" id="taMa1wk0" min="2" max="300" inputmode="numeric"></td><td><input type="number" id="taMa1wk1" min="2" max="300" inputmode="numeric"></td></tr>
+              <tr><th>月足</th><td><input type="number" id="taMa1mo0" min="2" max="300" inputmode="numeric"></td><td><input type="number" id="taMa1mo1" min="2" max="300" inputmode="numeric"></td></tr>
+            </tbody>
+          </table>
+          <div class="ta-bb">ボリンジャー 期間<input type="number" id="taBbN" min="2" max="200" inputmode="numeric">σ<input type="number" id="taBbK" min="0.5" max="5" step="0.1" inputmode="decimal">
+            <button type="button" class="btn sm" id="taReset">初期値に戻す</button></div>
+          <p class="muted small">期間は本数（日足なら日数、5分足なら5分の本数）。</p>
+        </details>
       </section>
 
       <section>
@@ -250,7 +272,6 @@
     <h3>銘柄表示設定</h3>
     <button type="button" class="icon-btn" id="btnViewClose" aria-label="閉じる"><svg class="ico"><use href="#i-close"/></svg></button>
   </div>
-  <p class="muted small">自動切替で表示する銘柄を選びます（登録銘柄一覧そのものは変わりません）。</p>
   <div class="vm-modes" id="vmModes">
     <button type="button" data-mode="all">全銘柄表示<small>表示対象ONの銘柄を登録順に</small></button>
     <button type="button" data-mode="random">順番ランダム<small>表示対象ONの銘柄をばらばらの順に</small></button>
@@ -260,7 +281,23 @@
   </div>
   <h4>お気に入り</h4>
   <div class="vm-favs" id="vmFavs"></div>
-  <p class="muted small">色の付いたお気に入りは登録済みです。押すと表示するか、銘柄を設定し直すかを選べます。</p>
+</dialog>
+
+<dialog id="orderDialog" class="view-dialog">
+  <div class="net-head">
+    <h3>順番設定（自動切替の順番）</h3>
+    <button type="button" class="icon-btn" id="btnOrderClose" aria-label="閉じる"><svg class="ico"><use href="#i-close"/></svg></button>
+  </div>
+  <div class="vm-modes" id="odModes">
+    <button type="button" data-order="manual">登録順<small>登録銘柄一覧の並び（⋮⋮ で並び替え）</small></button>
+    <button type="button" data-order="type">種類別<small>日本株→米国株→指数→先物→商品→為替→暗号資産</small></button>
+    <button type="button" data-order="name">名前順<small>銘柄名のあいうえお順</small></button>
+    <button type="button" data-order="code">コード順<small>銘柄コードの小さい順</small></button>
+    <button type="button" data-order="shuffle">全銘柄シャッフル<small>選ぶたびに並びを混ぜ直す</small></button>
+    <button type="button" data-order="up">値上がり率順<small>前日比の大きい順（一巡ごとに並べ直す）</small></button>
+    <button type="button" data-order="down">値下がり率順<small>前日比の小さい順（一巡ごとに並べ直す）</small></button>
+    <button type="button" data-order="alert">アラート優先<small>アラートONの銘柄を先に（残りは登録順）</small></button>
+  </div>
 </dialog>
 
 <dialog id="favDialog" class="fav-dialog">

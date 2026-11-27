@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261127151836';
-import * as D from './data.js?v=20261127151836';
-import { Stage, themeColors } from './chart.js?v=20261127151836';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, alarmKind, showAlertCard, initAlertCards } from './alerts.js?v=20261127151836';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE } from './names.js?v=20261127151836';
+import * as M from './market.js?v=20261127164219';
+import * as D from './data.js?v=20261127164219';
+import { Stage, themeColors, miniChart, TA_DEFAULT } from './chart.js?v=20261127164219';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, alarmKind, showAlertCard, initAlertCards } from './alerts.js?v=20261127164219';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE, categoryOf, CATEGORY_ORDER, readingOf } from './names.js?v=20261127164219';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -16,7 +16,9 @@ const DEFAULTS = {
   theme: 'dark', colorMode: 'jp', font: 'm', wakeLock: true,
   alertPopup: true, alertSound: true, alertSec: 10,
   chimeJP: true, chimeUS: true, chimeSec: 5,
-  viewMode: 'all', favs: [[], [], [], [], [], [], [], [], [], []],
+  viewMode: 'all', favs: Array.from({ length: 12 }, () => []),
+  order: 'manual', shuffleSeed: 1,
+  ta: JSON.parse(JSON.stringify(TA_DEFAULT)),
   closeJP: true, closeUS: true, closeSec: 5,
 };
 // 画面に出さない固定値
@@ -42,8 +44,12 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
    保存データが壊れていたり、貼り付けで読み込んだデータに想定外の値が入っていても、
    決められた項目・形式だけを取り出して使う（不具合や不正な値の混入を防ぐ）。 */
 const TF_KEYS = ['5m', '1d', '1wk', '1mo'];
+// 指数の種類の印（一覧の「指数」「先物」「商品」など）
+const KIND_TAG = { idx: '指数', fut: '先物', cmd: '商品', fx: '為替', crypto: '暗号資産' };
+const kindTag = (code) => KIND_TAG[categoryOf(code)] || '指数';
+const ORDER_KEYS = ['manual', 'type', 'name', 'code', 'shuffle', 'up', 'down', 'alert'];
 function cleanSettings(raw) {
-  const s = { ...DEFAULTS, ind: { ...DEFAULTS.ind } };
+  const s = { ...DEFAULTS, ind: { ...DEFAULTS.ind }, ta: cleanTa(null) };
   if (!raw || typeof raw !== 'object') return s;
   const int = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Math.round(Number(v)))) : d);
   s.interval = int(raw.interval, 5, 300, DEFAULTS.interval);
@@ -67,10 +73,25 @@ function cleanSettings(raw) {
   s.closeJP = raw.closeJP !== undefined ? !!raw.closeJP : DEFAULTS.closeJP;
   s.closeUS = raw.closeUS !== undefined ? !!raw.closeUS : DEFAULTS.closeUS;
   s.closeSec = int(raw.closeSec, 3, 30, DEFAULTS.closeSec);
-  // 銘柄表示設定（全銘柄・ランダム・日本株・米国株・指数・お気に入り1〜10）とお気に入りの中身
-  s.viewMode = /^(all|random|jp|us|idx|fav([1-9]|10))$/.test(raw.viewMode || '') ? raw.viewMode : 'all';
-  s.favs = Array.from({ length: 10 }, (_, i) => (Array.isArray(raw.favs?.[i]) ? raw.favs[i].filter((c) => typeof c === 'string').slice(0, 999) : []));
+  // 銘柄表示設定（全銘柄・ランダム・日本株・米国株・指数・お気に入り1〜12）とお気に入りの中身
+  s.viewMode = /^(all|random|jp|us|idx|fav([1-9]|1[0-2]))$/.test(raw.viewMode || '') ? raw.viewMode : 'all';
+  s.favs = Array.from({ length: 12 }, (_, i) => (Array.isArray(raw.favs?.[i]) ? raw.favs[i].filter((c) => typeof c === 'string').slice(0, 999) : []));
+  s.order = ORDER_KEYS.includes(raw.order) ? raw.order : 'manual';
+  s.shuffleSeed = int(raw.shuffleSeed, 1, 2 ** 31 - 1, 1);
+  s.ta = cleanTa(raw.ta);
   return s;
+}
+// テクニカルの設定：移動平均の期間（足種ごとに短期・長期）、ボリンジャーの期間とσ
+function cleanTa(raw) {
+  const num = (v, lo, hi, d) => (Number.isFinite(Number(v)) && v !== '' && v != null ? Math.min(hi, Math.max(lo, Number(v))) : d);
+  const ma = {};
+  for (const tf of TF_KEYS) {
+    const d = TA_DEFAULT.ma[tf];
+    const r = Array.isArray(raw?.ma?.[tf]) ? raw.ma[tf] : d;
+    ma[tf] = [0, 1].map((i) => Math.round(num(r[i], 2, 300, d[i])));
+  }
+  const bb = { n: Math.round(num(raw?.bb?.n, 2, 200, TA_DEFAULT.bb.n)), k: Math.round(num(raw?.bb?.k, 0.5, 5, TA_DEFAULT.bb.k) * 10) / 10 };
+  return { ma, bb };
 }
 function cleanList(raw) {
   if (!Array.isArray(raw)) return null;
@@ -102,6 +123,7 @@ const saved = load(KEY.state, {});
 const st = {
   code: saved.code || null, paused: !!saved.paused, remaining: settings.interval,
   touchUntil: 0, settingsOpen: false, lastError: null, seq: 0, prefetching: null,
+  randomSeed: 1 + Math.floor(Math.random() * 2 ** 30), openSig: '',
 };
 const stages = [new Stage($('stageA')), new Stage($('stageB'))];
 let front = 0;
@@ -218,7 +240,8 @@ function rebuildCharts() {
 /* ---------------- 巡回 ----------------
    自動切替で表示する銘柄（activeCodes）は「銘柄表示設定」で決まる：
    全銘柄表示・順番ランダム・日本株のみ・米国株のみ・指数のみ（どれも表示対象ONの銘柄から）、
-   お気に入り1〜10（お気に入りに登録した銘柄。表示対象のON/OFFに関係なく表示）。
+   お気に入り1〜12（お気に入りに登録した銘柄。表示対象のON/OFFに関係なく表示）。
+   並ぶ順番は「順番設定」で決まる（orderCodes）。
    通信の計画・裏での取り込みも、この銘柄だけを対象にする（表示しない銘柄のために通信しない）。 */
 const VIEW_LABEL = { all: '全銘柄表示', random: '順番ランダム', jp: '日本株のみ', us: '米国株のみ', idx: '指数のみ' };
 const viewLabel = (m) => VIEW_LABEL[m] || `お気に入り${m.slice(3)}`;
@@ -235,12 +258,51 @@ function activeCodes() {
     else if (mode === 'us') en = en.filter((x) => isUS(x.code));
     else if (mode === 'idx') en = en.filter((x) => isIndex(x.code));
     codes = en.map((x) => x.code);
-    if (mode === 'random') {
-      for (let i = codes.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [codes[i], codes[j]] = [codes[j], codes[i]]; }
-    }
   }
+  // 順番ランダム：開いている間は同じ並び（設定画面を閉じるたびに混ぜ直さない）
+  codes = mode === 'random' ? shuffled(codes, st.randomSeed) : orderCodes(codes);
   activeCache = { ver: listVer, codes, pos: new Map(codes.map((c, i) => [c, i])) };
   return codes;
+}
+/* ---------------- 順番設定（自動切替の順番） ----------------
+   登録順・種類別・名前順・コード順・全銘柄シャッフル・値上がり率順・値下がり率順・アラート優先。
+   登録銘柄一覧の並びそのものは変えない。 */
+const ORDER_LABEL = { manual: '登録順', type: '種類別', name: '名前順', code: 'コード順', shuffle: '全銘柄シャッフル', up: '値上がり率順', down: '値下がり率順', alert: 'アラート優先' };
+function seedHash(s, seed) { let h = (2166136261 ^ seed) >>> 0; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+function shuffled(codes, seed) {
+  const key = new Map(codes.map((c) => [c, seedHash(c, seed)]));
+  return [...codes].sort((a, b) => key.get(a) - key.get(b));
+}
+const jaCollator = new Intl.Collator('ja', { numeric: true, sensitivity: 'base' });
+function orderCodes(codes) {
+  const o = settings.order;
+  if (o === 'manual' || codes.length < 2) return codes;
+  if (o === 'shuffle') return shuffled(codes, settings.shuffleSeed);
+  const idx = new Map(codes.map((c, i) => [c, i]));
+  const item = new Map(list.map((x) => [x.code, x]));
+  const byIdx = (a, b) => idx.get(a) - idx.get(b);
+  const out = [...codes];
+  if (o === 'type') {
+    const rank = new Map(CATEGORY_ORDER.map((k, i) => [k, i]));
+    out.sort((a, b) => rank.get(categoryOf(a)) - rank.get(categoryOf(b)) || byIdx(a, b));
+  } else if (o === 'name') {
+    const rd = new Map(codes.map((c) => [c, readingOf(c, item.get(c)?.name)]));
+    out.sort((a, b) => jaCollator.compare(rd.get(a), rd.get(b)) || byIdx(a, b));
+  } else if (o === 'code') {
+    // 日本株（数字のコード）→ 米国株・指数（英字）の順
+    out.sort((a, b) => jaCollator.compare(a, b));
+  } else if (o === 'up' || o === 'down') {
+    const pct = (c) => quotes[c]?.pct;
+    out.sort((a, b) => {
+      const pa = pct(a), pb = pct(b);
+      if (pa == null) return pb == null ? byIdx(a, b) : 1; // データの無い銘柄は最後
+      if (pb == null) return -1;
+      return (o === 'up' ? pb - pa : pa - pb) || byIdx(a, b);
+    });
+  } else if (o === 'alert') {
+    out.sort((a, b) => (item.get(b)?.alertOn ? 1 : 0) - (item.get(a)?.alertOn ? 1 : 0) || byIdx(a, b));
+  }
+  return out;
 }
 function neighbor(delta, from = st.code) {
   const codes = activeCodes();
@@ -395,7 +457,11 @@ async function present(item, entries, seq, loading = false) {
 }
 
 function go(delta, nav = true, auto = false) {
-  const code = neighbor(delta);
+  let code = neighbor(delta);
+  if (delta > 0 && (settings.order === 'up' || settings.order === 'down') && code && activeCache.pos.get(code) === 0 && settings.viewMode !== 'random') {
+    listVer++; // 一巡したので、最新の前日比で並べ直して先頭から
+    code = activeCodes()[0];
+  }
   st.remaining = settings.interval;
   // 先読みのタイミングに0〜3秒のばらつきを入れる（毎回同じリズムの機械的な通信にしない）
   const baseLead = Math.min(PREFETCH_SEC, settings.interval - 2);
@@ -522,13 +588,15 @@ async function warmTick(now) {
 let loading = false;
 function setLoading(v) { loading = v; updateStatus(); }
 
+// 毎秒呼ばれる表示の更新は、値が変わったときだけ書き換える（画面の再計算を減らす）
+const setIf = (el, prop, v) => { if (el[prop] !== v) el[prop] = v; };
 function updateStatus(now = Date.now()) {
   const m = st.code ? marketOf(st.code) : 'JP';
   const ph = M.marketPhase(now, m);
   const dot = $('statusDot');
   const err = st.lastError;
-  dot.className = `dot ${err ? 'err' : ph.open ? 'ok' : 'closed'}${loading ? ' busy' : ''}`;
-  $('statusText').textContent = `${M.MARKET_LABEL[m] || '東証'}・${ph.open ? `接続中（${ph.label}）` : ph.label}`;
+  setIf(dot, 'className', `dot ${err ? 'err' : ph.open ? 'ok' : 'closed'}${loading ? ' busy' : ''}`);
+  setIf($('statusText'), 'textContent', `${M.MARKET_LABEL[m] || '東証'}・${ph.open ? `接続中（${ph.label}）` : ph.label}`);
   const e = stages[front].entries?.[settings.leftTf] || stages[front].entries?.[settings.rightTf];
   const ns = D.netStats();
   const b = D.budgetStatus();
@@ -537,19 +605,23 @@ function updateStatus(now = Date.now()) {
   const follower = !D.amLeader();
   const offline = D.isOffline();
   const skew = D.clockSkew();
-  mb.hidden = !(b.over || offline || skew || cool || follower || approxMode());
-  mb.textContent = b.over ? '本日の通信上限' : offline ? '通信が切れています' : skew ? '端末の時計が遅れています' : cool ? '通信を控えています' : follower ? '別のタブで通信中' : '始値は近似';
-  mb.title = b.over ? `今日の通信が${b.cap}回に達したため、保存済みのデータで表示しています（明日0時に再開）。それでも、後場の始まり（12:55ごろ）と引け後（16:00ごろ）の2回だけは株価を更新します（米国株は取引開始30分後と引け後）`
+  setIf(mb, 'hidden', !(b.over || offline || skew || cool || follower || approxMode()));
+  if (mb.hidden) return updateErr(err, e);
+  setIf(mb, 'textContent', b.over ? '本日の通信上限' : offline ? '通信が切れています' : skew ? '端末の時計が遅れています' : cool ? '通信を控えています' : follower ? '別のタブで通信中' : '始値は近似');
+  setIf(mb, 'title', b.over ? `今日の通信が${b.cap}回に達したため、保存済みのデータで表示しています（明日0時に再開）。それでも、後場の始まり（12:55ごろ）と引け後（16:00ごろ）の2回だけは株価を更新します（米国株は取引開始30分後と引け後）`
     : offline ? 'ネットにつながっていないため、保存済みのデータで表示しています（つながったら自動で再開。この間は1日の通信回数に数えません）'
     : skew ? `端末の時計が約${Math.round(skew / 60e3)}分遅れています。取引時間の判定がずれて余計な通信をすることがあるので、端末の設定で時刻を「自動」にしてください`
     : cool ? '回数制限や通信の失敗が続いたため、しばらく通信を控えています（相手の負担を減らし、ban を防ぐため）'
-    : follower ? 'このアプリを別のタブでも開いているため、通信はそちらに任せ、保存済みのデータで表示しています' : `表示対象が${EXACT_OPEN_MAX}銘柄を超えているため、当日の始値は「${OPEN_LABEL[currentPlan().openMode]}」で近似しています`;
+    : follower ? 'このアプリを別のタブでも開いているため、通信はそちらに任せ、保存済みのデータで表示しています' : `表示対象が${EXACT_OPEN_MAX}銘柄を超えているため、当日の始値は「${OPEN_LABEL[currentPlan().openMode]}」で近似しています`);
   mb.classList.toggle('warn', b.over || !!skew);
+  updateErr(err, e);
+}
+function updateErr(err, e) {
   const errEl = $('errText');
-  errEl.hidden = !err || !!err.budget || !!err.quiet;
+  setIf(errEl, 'hidden', !err || !!err.budget || !!err.quiet);
   if (err) {
-    errEl.textContent = (e ? '通信エラー：前回データを表示中' : '通信エラー：データ未取得') + '（タップで詳細）';
-    errEl.title = String(err.message || err);
+    setIf(errEl, 'textContent', (e ? '通信エラー：前回データを表示中' : '通信エラー：データ未取得') + '（タップで詳細）');
+    setIf(errEl, 'title', String(err.message || err));
   }
 }
 
@@ -557,8 +629,9 @@ function renderCountdown(now = Date.now()) {
   const r = pauseReason(now);
   const el = $('countdown');
   el.classList.toggle('paused', !!r);
-  el.textContent = r || `残り ${Math.max(0, st.remaining)}秒`;
-  $('pauseUse').setAttribute('href', st.paused ? '#i-play' : '#i-pause');
+  setIf(el, 'textContent', r || `残り ${Math.max(0, st.remaining)}秒`);
+  const icon = st.paused ? '#i-play' : '#i-pause';
+  if ($('pauseUse').getAttribute('href') !== icon) $('pauseUse').setAttribute('href', icon);
   $('btnPause').classList.toggle('on', st.paused);
 }
 
@@ -585,6 +658,7 @@ function openSettings() {
   setAlertMode(false);
   setOverview(false);
   st.settingsOpen = true;
+  st.openSig = viewSig();
   document.body.classList.add('in-settings');
   $('settings').hidden = false;
   fillSettings();
@@ -595,23 +669,33 @@ function openSettings() {
 
 // apply = true：「設定を保存して戻る」。右側の設定を反映する
 // apply = false：× や「戻る」。右側の変更は捨てる（銘柄の登録・並び替えなどは、その場で保存済みなので反映される）
+// 自動切替の対象・順番に関わる設定（これが変わったら、閉じたときに表示中の銘柄の「何銘柄目」も描き直す）
+function viewSig() { return JSON.stringify([settings.viewMode, settings.order, settings.shuffleSeed, settings.favs, list.map((x) => (x.enabled ? x.code : `-${x.code}`))]); }
 function closeSettings(apply = false) {
-  const prev = JSON.stringify({ tf: [settings.leftTf, settings.rightTf, settings.leftBars, settings.rightBars], ind: settings.ind, t: settings.theme, c: settings.colorMode, f: settings.font });
+  const prev = JSON.stringify({ tf: [settings.leftTf, settings.rightTf, settings.leftBars, settings.rightBars], ind: settings.ind, ta: settings.ta, t: settings.theme, c: settings.colorMode, f: settings.font });
   if (apply) readSettings();
   save(KEY.settings, settings);
   saveList();
   applyLook();
   applyData();
   updateStatus();
-  const next = JSON.stringify({ tf: [settings.leftTf, settings.rightTf, settings.leftBars, settings.rightBars], ind: settings.ind, t: settings.theme, c: settings.colorMode, f: settings.font });
+  const next = JSON.stringify({ tf: [settings.leftTf, settings.rightTf, settings.leftBars, settings.rightBars], ind: settings.ind, ta: settings.ta, t: settings.theme, c: settings.colorMode, f: settings.font });
+  const viewChanged = viewSig() !== st.openSig;
   st.settingsOpen = false;
+  if (overviewMode) setOverview(false); // 隠れた全銘柄一覧を更新し続けない（チャート一覧のチャートも消す）
   document.body.classList.remove('in-settings');
   $('settings').hidden = true;
   st.remaining = settings.interval;
   if (prev !== next) rebuildCharts();
   const cur = activeCodes().includes(st.code) ? list.find((x) => x.code === st.code) : null;
   const code = cur ? cur.code : neighbor(1);
-  if (code) { stages[front].code = prev !== next ? null : stages[front].code; show(code); } else showEmpty(true);
+  // 表示設定・順番・お気に入りを変えたときは、同じ銘柄でも描き直す（「お気に入り1 3/5」などの表示をすぐ新しい設定に）
+  if (code) {
+    if (prev !== next) stages[front].code = null;
+    else if (viewChanged && stages[front].code === code && stages[front].entries) render(stages[front], list.find((x) => x.code === code), stages[front].entries, true);
+    show(code);
+  } else showEmpty(true);
+  if (viewChanged) { setTimeout(() => prefetch(neighbor(1)), 1500); }
   if (settings.wakeLock) keepAwake(); else if (wake) { wake.release(); wake = null; }
   renderCountdown();
 }
@@ -658,6 +742,7 @@ function fillSettings() {
   periodOptions('selLeftBars', s.leftTf, s.leftBars);
   periodOptions('selRightBars', s.rightTf, s.rightBars);
   $('chkMa').checked = s.ind.ma; $('chkBb').checked = s.ind.bb; $('chkVol').checked = s.ind.vol;
+  fillTa(s.ta);
   $('chkWake').checked = s.wakeLock;
   $('chkChimeJP').checked = s.chimeJP;
   $('chkChimeUS').checked = s.chimeUS;
@@ -682,6 +767,10 @@ function formValues() {
   s.leftTf = $('segLeftTf').dataset.v; s.rightTf = $('segRightTf').dataset.v;
   s.leftBars = Number($('selLeftBars').value); s.rightBars = Number($('selRightBars').value);
   s.ind = { ma: $('chkMa').checked, bb: $('chkBb').checked, vol: $('chkVol').checked };
+  s.ta = cleanTa({
+    ma: Object.fromEntries(TF_KEYS.map((tf) => [tf, [$(`taMa${tf}0`).value, $(`taMa${tf}1`).value]])),
+    bb: { n: $('taBbN').value, k: $('taBbK').value },
+  });
   s.wakeLock = $('chkWake').checked;
   s.chimeJP = $('chkChimeJP').checked;
   s.chimeUS = $('chkChimeUS').checked;
@@ -694,6 +783,11 @@ function formValues() {
   return s;
 }
 function readSettings() { Object.assign(settings, formValues()); }
+function fillTa(ta) {
+  for (const tf of TF_KEYS) { $(`taMa${tf}0`).value = ta.ma[tf][0]; $(`taMa${tf}1`).value = ta.ma[tf][1]; }
+  $('taBbN').value = ta.bb.n; $('taBbK').value = ta.bb.k;
+}
+$('taReset').addEventListener('click', () => { fillTa(cleanTa(null)); setTimeout(updateDirty, 0); });
 
 // 右側の設定を変更したときだけ「設定を保存して戻る」ボタンを出す
 // （銘柄の登録・削除・並び替え・表示対象・名前・アラートは、その場で保存しているので対象外）
@@ -714,7 +808,7 @@ function renderList() {
   $('listBody').innerHTML = list.map((x, i) => `
     <tr data-code="${esc(x.code)}">
       <td class="c-no"><span class="grip" title="ドラッグで並び替え"><svg class="ico"><use href="#i-grip"/></svg></span><span class="no">${String(i + 1).padStart(3, '0')}</span></td>
-      <td class="c-code num">${esc(x.code)}${isIndex(x.code) ? '<span class="tag idx">指数</span>' : isUS(x.code) ? '<span class="tag">米</span>' : ''}${noData.has(x.code) ? '<span class="tag nd" title="Yahoo にこの銘柄のデータがありません（上場廃止・コード違いの可能性）。今日は取りに行きません">データなし</span>' : gaveUp.has(x.code) ? '<span class="tag nd" title="取得の失敗が5回続いたため、今日はこの銘柄を取りに行きません（明日また試します）">取得失敗</span>' : ''}</td>
+      <td class="c-code num">${esc(x.code)}${isIndex(x.code) ? `<span class="tag idx">${kindTag(x.code)}</span>` : isUS(x.code) ? '<span class="tag">米</span>' : ''}${noData.has(x.code) ? '<span class="tag nd" title="Yahoo にこの銘柄のデータがありません（上場廃止・コード違いの可能性）。今日は取りに行きません">データなし</span>' : gaveUp.has(x.code) ? '<span class="tag nd" title="取得の失敗が5回続いたため、今日はこの銘柄を取りに行きません（明日また試します）">取得失敗</span>' : ''}</td>
       <td class="c-name"><button class="link rename">${esc(x.name || '（名称未設定）')}</button></td>
       <td class="c-price r"></td>
       <td class="c-target"><div class="tgt-box"><input class="tgt" type="text" autocomplete="off" enterkeyhint="done" placeholder="株価を入力" aria-label="${esc(x.code)} の設定株価"><span class="tgt-dir"></span></div></td>
@@ -923,14 +1017,117 @@ let overviewMode = false;
 let ovSort = 'list';
 let ovTimer = null;
 // 描き直しはまとめて1回に（株価がいくつも続けて届いたときに、何度も描き直さないように）
-function scheduleOverview() { clearTimeout(ovTimer); ovTimer = setTimeout(() => { if (overviewMode) renderOverview(); }, 300); }
+function scheduleOverview() {
+  clearTimeout(ovTimer);
+  ovTimer = setTimeout(() => {
+    if (!overviewMode) return;
+    // チャート一覧では、チャートは描き直さず前日比の文字と集計だけ書き換える（重くしない）
+    if (ovCharts) { list.forEach((x) => updateTile(x.code)); renderOvSum(); } else renderOverview();
+  }, 300);
+}
 function setOverview(on) {
   overviewMode = on;
   $('settings').classList.toggle('overview-mode', on);
-  if (!on) return;
+  if (!on) { ocClear(); return; }
   seg('segOvSort', ovSort, (v) => { ovSort = v; renderOverview(); });
+  seg('segOvTf', ovTf, (v) => { ovTf = v; renderOverview(); });
   renderOverview();
   fillQuotes(); // 控えに無い銘柄だけ読み、そろった分から表示する
+}
+$('btnOvChart').addEventListener('click', () => {
+  ovCharts = !ovCharts;
+  renderOverview();
+});
+
+/* チャート一覧（2列）：保存済みのデータだけで描く（この画面のための通信はしない）。
+   重くならないように
+   ・画面に近づいたカードだけ描き、離れたら消す（同時に描くのは最大 OC_LIVE 枚）
+   ・スクロール中は描き始めを少し待ち、1回に1枚ずつ描く */
+let ovCharts = false;
+let ovTf = '1d';
+const OC_LIVE = 16;
+const OC_BARS = { '1d': 120, '1wk': 104, '1mo': 120 };
+const ocLive = new Map(); // code -> { chart, el }
+let ocObs = null;
+let ocQueue = [];
+let ocBusy = false;
+let ocGen = 0;
+function ocClear() {
+  ocGen++;
+  ocObs?.disconnect();
+  ocObs = null;
+  ocQueue = [];
+  for (const v of ocLive.values()) v.chart?.destroy();
+  ocLive.clear();
+  $('ovCharts').innerHTML = '';
+}
+function ocCardHtml(x) {
+  const q = quotes[x.code];
+  const qs = quoteStatus(x.code, q);
+  const waiting = qs?.state === 'pending' || qs?.state === 'special';
+  const pct = waiting || q?.pct == null ? null : q.pct;
+  const d = pct == null ? '' : pct > 0 ? 'up' : pct < 0 ? 'down' : '';
+  const t = qs?.state === 'pending' ? '−' : qs?.state === 'special' ? '特' : pct == null ? '' : `${pct > 0 ? '+' : pct < 0 ? '−' : '±'}${Math.abs(pct).toFixed(2)}%`;
+  return `<button type="button" class="oc-card" data-code="${esc(x.code)}">
+    <div class="oc-head"><span class="oc-code">${esc(x.code)}</span><span class="oc-name">${esc(x.name || '（名称未設定）')}</span><span class="oc-pct ${d}">${t}</span></div>
+    <div class="oc-box"><div class="oc-msg">　</div></div>
+  </button>`;
+}
+function renderCharts(rows) {
+  ocClear();
+  const gen = ocGen;
+  const box = $('ovCharts');
+  box.innerHTML = rows.map(ocCardHtml).join('') || '<p class="ov-empty">登録銘柄がありません</p>';
+  ocObs = new IntersectionObserver((ents) => {
+    for (const en of ents) {
+      const code = en.target.dataset.code;
+      if (en.isIntersecting) { if (!ocLive.has(code) && !ocQueue.includes(code)) ocQueue.push(code); }
+      else {
+        ocQueue = ocQueue.filter((c) => c !== code);
+        const v = ocLive.get(code);
+        if (v) { v.chart?.destroy(); ocLive.delete(code); en.target.querySelector('.oc-box').innerHTML = '<div class="oc-msg">　</div>'; }
+      }
+    }
+    ocPump(gen);
+  }, { root: box, rootMargin: '200px 0px' });
+  box.querySelectorAll('.oc-card').forEach((el) => ocObs.observe(el));
+}
+async function ocPump(gen) {
+  if (ocBusy) return;
+  ocBusy = true;
+  try {
+    while (ocQueue.length && gen === ocGen && overviewMode && ovCharts) {
+      const code = ocQueue.shift();
+      const el = $('ovCharts').querySelector(`.oc-card[data-code="${CSS.escape(code)}"]`);
+      if (!el || ocLive.has(code)) continue;
+      // 同時に描くのは OC_LIVE 枚まで（多いときは古いものから消す）
+      while (ocLive.size >= OC_LIVE) {
+        const [old, v] = ocLive.entries().next().value;
+        v.chart?.destroy();
+        ocLive.delete(old);
+        const oe = $('ovCharts').querySelector(`.oc-card[data-code="${CSS.escape(old)}"] .oc-box`);
+        if (oe) oe.innerHTML = '<div class="oc-msg">　</div>';
+      }
+      const tf = ovTf;
+      const all = await D.peekBars(code, tf); // 保存済みのデータだけ（通信しない）
+      if (gen !== ocGen || tf !== ovTf) return;
+      const boxEl = el.querySelector('.oc-box');
+      if (!all?.length) {
+        boxEl.innerHTML = '<div class="oc-msg">保存済みのデータがありません<br>（この画面では通信しないため描けません）</div>';
+        ocLive.set(code, { chart: null });
+        continue;
+      }
+      boxEl.innerHTML = '';
+      const host = document.createElement('div');
+      host.className = 'lc';
+      boxEl.append(host);
+      const bars = all.slice(-OC_BARS[tf]);
+      ocLive.set(code, { chart: miniChart(host, bars, tf, themeColors(), settings.ind, settings.ta) });
+      await frames(1); // 1枚描くごとに画面を更新（スクロールを止めない）
+    }
+  } finally {
+    ocBusy = false;
+  }
 }
 $('btnOverview').addEventListener('click', () => setOverview(true));
 $('btnOvBack').addEventListener('click', () => setOverview(false));
@@ -950,7 +1147,7 @@ function tileHtml(x) {
     : q?.chg == null ? '' : `${sign(q.chg)}${us || idx ? fmtNum(Math.abs(q.chg), true) : fmtNum(Math.abs(q.chg))}`;
   const lim = qs?.limit ? `<b class="ov-lim ${qs.limit === 'high' ? 'lim-high' : 'lim-low'}">${qs.limit === 'high' ? '高' : '安'}</b>` : '';
   const pctTxt = pct == null ? '' : `${sign(pct)}${Math.abs(pct).toFixed(2)}%`;
-  const flags = `${x.alertOn ? '<svg class="ico" aria-label="アラート中"><use href="#i-bell"/></svg>' : ''}${idx ? '<span class="ov-badge">指数</span>' : us ? '<span class="ov-badge">米</span>' : ''}${x.enabled ? '' : '<span class="ov-badge">表示OFF</span>'}`;
+  const flags = `${x.alertOn ? '<svg class="ico" aria-label="アラート中"><use href="#i-bell"/></svg>' : ''}${idx ? `<span class="ov-badge">${kindTag(x.code)}</span>` : us ? '<span class="ov-badge">米</span>' : ''}${x.enabled ? '' : '<span class="ov-badge">表示OFF</span>'}`;
   return `<button type="button" class="ov-tile ${dir ? `t-${dir}` : ''}${x.enabled ? '' : ' off'}" data-code="${esc(x.code)}" style="--heat:${heat.toFixed(0)}%">
     <div class="ov-top"><span>${esc(x.code)}</span><span class="ov-flags">${flags}</span></div>
     <div class="ov-name">${esc(x.name || '（名称未設定）')}</div>
@@ -969,7 +1166,18 @@ function renderOverview() {
       return ovSort === 'up' ? pb - pa : pa - pb;
     });
   }
-  $('ovGrid').innerHTML = rows.map(tileHtml).join('') || '<p class="ov-empty">登録銘柄がありません</p>';
+  $('btnOvChart').classList.toggle('on', ovCharts);
+  $('btnOvChart').setAttribute('aria-pressed', String(ovCharts));
+  $('ovChartTools').hidden = !ovCharts;
+  $('ovGrid').hidden = ovCharts;
+  $('ovCharts').hidden = !ovCharts;
+  $('ovHint').textContent = ovCharts ? 'カードを押すと、その銘柄のチャートを表示します ／ 保存済みのデータが無い銘柄は描きません（通信しないため）'
+    : 'タイルを押すと、その銘柄のチャートを表示します ／ 色の濃さは前日比の大きさ';
+  if (ovCharts) { $('ovGrid').innerHTML = ''; renderCharts(rows); } else { ocClear(); $('ovGrid').innerHTML = rows.map(tileHtml).join('') || '<p class="ov-empty">登録銘柄がありません</p>'; }
+  renderOvSum();
+}
+function renderOvSum() {
+  const key = (x) => quotes[x.code]?.pct;
   let up = 0, down = 0, flat = 0;
   for (const x of list) { const v = key(x); if (v == null) continue; if (v > 0) up++; else if (v < 0) down++; else flat++; }
   $('ovCount').textContent = `(${list.length}銘柄)`;
@@ -978,11 +1186,23 @@ function renderOverview() {
 function updateTile(code) {
   const x = list.find((i) => i.code === code);
   if (!x || !overviewMode) return;
+  if (ovCharts) { // チャート一覧：前日比の文字だけ書き換える（チャートは描き直さない）
+    const h = $('ovCharts').querySelector(`.oc-card[data-code="${CSS.escape(code)}"] .oc-pct`);
+    if (h) { const t = document.createElement('div'); t.innerHTML = ocCardHtml(x); const n = t.querySelector('.oc-pct'); if (n.outerHTML !== h.outerHTML) h.replaceWith(n); }
+    return;
+  }
   if (ovSort !== 'list') { scheduleOverview(); return; } // 並び順が変わるので全体を描き直す
   const el = $('ovGrid').querySelector(`[data-code="${CSS.escape(code)}"]`);
   if (el) el.outerHTML = tileHtml(x);
 }
 // タイルを押したら、その銘柄のチャートへ
+$('ovCharts').addEventListener('click', (e) => {
+  const t = e.target.closest('.oc-card');
+  if (!t) return;
+  st.code = t.dataset.code;
+  persistState();
+  closeSettings(false);
+});
 $('ovGrid').addEventListener('click', (e) => {
   const t = e.target.closest('.ov-tile');
   if (!t) return;
@@ -1000,7 +1220,7 @@ function renderViewButton() {
 }
 function renderViewDialog() {
   $('vmModes').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.mode === settings.viewMode));
-  $('vmFavs').innerHTML = Array.from({ length: 10 }, (_, i) => {
+  $('vmFavs').innerHTML = Array.from({ length: 12 }, (_, i) => {
     const n = i + 1;
     const cnt = favCodes(n).length;
     const on = settings.viewMode === `fav${n}`;
@@ -1008,6 +1228,7 @@ function renderViewDialog() {
   }).join('');
 }
 function setViewMode(mode) {
+  if (mode === 'random') st.randomSeed = 1 + Math.floor(Math.random() * 2 ** 30); // 選び直したら混ぜ直す
   settings.viewMode = mode;
   save(KEY.settings, settings);
   listVer++;
@@ -1045,7 +1266,7 @@ function openFavEditor(n) {
   const sel = new Set(settings.favs[n - 1] || []);
   $('favTitle').textContent = `お気に入り${n}の銘柄`;
   $('favList').innerHTML = list.map((x) => `<label class="fav-row"><input type="checkbox" value="${esc(x.code)}"${sel.has(x.code) ? ' checked' : ''}>
-    <span class="num code">${esc(x.code)}</span><span class="nm">${esc(x.name || '（名称未設定）')}</span>${isIndex(x.code) ? '<span class="tag idx">指数</span>' : isUS(x.code) ? '<span class="tag">米</span>' : ''}</label>`).join('')
+    <span class="num code">${esc(x.code)}</span><span class="nm">${esc(x.name || '（名称未設定）')}</span>${isIndex(x.code) ? `<span class="tag idx">${kindTag(x.code)}</span>` : isUS(x.code) ? '<span class="tag">米</span>' : ''}</label>`).join('')
     || '<p class="muted">登録銘柄がありません。先に「新規登録」で銘柄を登録してください。</p>';
   $('favClear').hidden = !sel.size;
   favUpdateCount();
@@ -1084,6 +1305,38 @@ $('favClear').addEventListener('click', async () => {
   toast(`お気に入り${n}の登録を消しました`);
 });
 renderViewButton();
+
+/* ---------------- 順番設定（その場で保存。× で戻るだけで反映） ---------------- */
+const orderDlg = $('orderDialog');
+function renderOrderButton() {
+  $('odCurrent').textContent = settings.order === 'manual' ? '' : `（${ORDER_LABEL[settings.order]}）`;
+}
+function renderOrderDialog() {
+  $('odModes').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.order === settings.order));
+}
+async function setOrder(order) {
+  if (order === 'shuffle') settings.shuffleSeed = 1 + Math.floor(Math.random() * 2 ** 30);
+  if (order === 'name' && !dictReady()) await loadDict(); // 日本株の読み（あいうえお順に使う）
+  if (order === 'up' || order === 'down') await fillQuotes(); // 前日比の控えが無い銘柄は保存済みのデータから読む（通信しない）
+  settings.order = order;
+  save(KEY.settings, settings);
+  listVer++;
+  applyData();
+  renderOrderButton();
+  renderOrderDialog();
+  const note = settings.viewMode === 'random' ? '（「順番ランダム」表示の間はランダムの順になります）' : st.settingsOpen ? '（設定画面を閉じると切り替わります）' : '';
+  toast(`自動切替を「${ORDER_LABEL[order]}」にしました${note}`);
+}
+$('btnOrder').addEventListener('click', () => { renderOrderDialog(); orderDlg.showModal(); });
+$('btnOrderClose').addEventListener('click', () => orderDlg.close());
+orderDlg.addEventListener('click', (e) => { if (e.target === orderDlg) orderDlg.close(); });
+$('odModes').addEventListener('click', async (e) => {
+  const b = e.target.closest('button[data-order]');
+  if (!b) return;
+  orderDlg.close();
+  await setOrder(b.dataset.order);
+});
+renderOrderButton();
 
 /* ---------------- アプリ内の確認画面 ----------------
    ブラウザ標準の確認画面（confirm / prompt / alert）は Android で全画面表示を解除してしまうため使わない。
@@ -1406,6 +1659,8 @@ document.addEventListener('visibilitychange', () => {
 
 /* ---------------- 起動 ---------------- */
 loadDict().then(() => {
+  if (settings.order === 'name') listVer++; // 日本株の読みがそろったので、名前順を並べ直す
+  if (settings.order === 'up' || settings.order === 'down') fillQuotes().then(() => { listVer++; });
   let changed = false;
   for (const x of list) if (!x.name) { const n = lookupName(x.code); if (n) { x.name = n; changed = true; } }
   if (changed) saveList();
