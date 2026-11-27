@@ -24,8 +24,15 @@ export function parsePrice(text) {
 }
 
 // 価格の表示（半角・桁区切り）。米国株は小数2桁、日本株は小数があれば1桁まで
-export function fmtNum(v, us = false) {
+// 1未満の小さい値（暗号資産など）は有効数字4桁ほどまで出す（0.0577、0.000003650 など。2桁に丸めると 0.00 になるため）
+export function smallDigits(v) {
+  const a = Math.abs(v);
+  return a > 0 && a < 1 ? Math.min(10, Math.max(2, Math.ceil(-Math.log10(a)) + 3)) : 2;
+}
+// ref：桁数を決める基準の値（前日比など「差」を出すときは株価を渡す。0.31 を 0.3100 にしないため）
+export function fmtNum(v, us = false, ref = v) {
   if (v == null || !Number.isFinite(v)) return '';
+  if (ref !== 0 && Math.abs(ref) < 1) { const d = smallDigits(ref); return v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }); }
   return us
     ? v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
     : v.toLocaleString('ja-JP', { maximumFractionDigits: 1 });

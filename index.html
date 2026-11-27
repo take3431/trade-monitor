@@ -11,15 +11,15 @@
      外部への通信に、このページの URL（参照元）を付けない。 -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://r.jina.ai https://api.allorigins.win https://api.codetabs.com; object-src 'none'; base-uri 'self'; form-action 'self'">
 <meta name="referrer" content="no-referrer">
-<meta name="app-version" content="20261127164219">
+<meta name="app-version" content="20261127172538">
 <meta name="theme-color" content="#0d1117">
 <title>TRADE MONITOR</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-180.png">
-<link rel="stylesheet" href="css/style.css?v=20261127164219">
-<script src="vendor/lightweight-charts.standalone.production.js?v=20261127164219"></script>
-<script type="module" src="js/gate.js?v=20261127164219"></script>
+<link rel="stylesheet" href="css/style.css?v=20261127172538">
+<script src="vendor/lightweight-charts.standalone.production.js?v=20261127172538"></script>
+<script type="module" src="js/gate.js?v=20261127172538"></script>
 </head>
 <body class="locked">
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -82,7 +82,7 @@
   </div>
 </main>
 
-<div id="settings" class="settings" hidden>
+<div id="settings" class="settings is-closed">
   <section class="card overview" id="overview">
     <div class="ov-head">
       <h2>全銘柄一覧 <span id="ovCount" class="muted"></span></h2>
@@ -95,7 +95,7 @@
     </div>
     <div class="ov-ctools" id="ovChartTools" hidden>
       <div class="seg sm" id="segOvTf"><button data-v="1mo">月足</button><button data-v="1wk">週足</button><button data-v="1d">日足</button></div>
-      <span class="muted small" id="ovChartNote">保存済みのデータだけで描きます（この画面では通信しません）</span>
+      <label class="ov-period">表示期間<select id="selOvBars"></select></label>
     </div>
     <div class="ov-grid" id="ovGrid"></div>
     <div class="ov-charts" id="ovCharts" hidden></div>
@@ -154,17 +154,20 @@
         <details class="ta-set" id="taSet">
           <summary>テクニカルの詳細設定</summary>
           <table class="ta-grid">
-            <thead><tr><th></th><th>移動平均 短期</th><th>移動平均 長期</th></tr></thead>
+            <thead><tr><th>移動平均</th>
+              <th><label class="ta-on"><input type="checkbox" id="taOn0"><i class="ma-sw ma1"></i>短期</label></th>
+              <th><label class="ta-on"><input type="checkbox" id="taOn1"><i class="ma-sw ma2"></i>中期</label></th>
+              <th><label class="ta-on"><input type="checkbox" id="taOn2"><i class="ma-sw ma3"></i>長期</label></th></tr></thead>
             <tbody>
-              <tr><th>5分足</th><td><input type="number" id="taMa5m0" min="2" max="300" inputmode="numeric"></td><td><input type="number" id="taMa5m1" min="2" max="300" inputmode="numeric"></td></tr>
-              <tr><th>日足</th><td><input type="number" id="taMa1d0" min="2" max="300" inputmode="numeric"></td><td><input type="number" id="taMa1d1" min="2" max="300" inputmode="numeric"></td></tr>
-              <tr><th>週足</th><td><input type="number" id="taMa1wk0" min="2" max="300" inputmode="numeric"></td><td><input type="number" id="taMa1wk1" min="2" max="300" inputmode="numeric"></td></tr>
-              <tr><th>月足</th><td><input type="number" id="taMa1mo0" min="2" max="300" inputmode="numeric"></td><td><input type="number" id="taMa1mo1" min="2" max="300" inputmode="numeric"></td></tr>
+              <tr><th>5分足</th><td><input type="number" id="taMa5m0" min="2" max="300" inputmode="numeric" aria-label="5分足の短期"><small>本</small></td><td><input type="number" id="taMa5m1" min="2" max="300" inputmode="numeric" aria-label="5分足の中期"><small>本</small></td><td><input type="number" id="taMa5m2" min="2" max="300" inputmode="numeric" aria-label="5分足の長期"><small>本</small></td></tr>
+              <tr><th>日足</th><td><input type="number" id="taMa1d0" min="2" max="300" inputmode="numeric" aria-label="日足の短期"><small>日</small></td><td><input type="number" id="taMa1d1" min="2" max="300" inputmode="numeric" aria-label="日足の中期"><small>日</small></td><td><input type="number" id="taMa1d2" min="2" max="300" inputmode="numeric" aria-label="日足の長期"><small>日</small></td></tr>
+              <tr><th>週足</th><td><input type="number" id="taMa1wk0" min="2" max="300" inputmode="numeric" aria-label="週足の短期"><small>週</small></td><td><input type="number" id="taMa1wk1" min="2" max="300" inputmode="numeric" aria-label="週足の中期"><small>週</small></td><td><input type="number" id="taMa1wk2" min="2" max="300" inputmode="numeric" aria-label="週足の長期"><small>週</small></td></tr>
+              <tr><th>月足</th><td><input type="number" id="taMa1mo0" min="2" max="300" inputmode="numeric" aria-label="月足の短期"><small>か月</small></td><td><input type="number" id="taMa1mo1" min="2" max="300" inputmode="numeric" aria-label="月足の中期"><small>か月</small></td><td><input type="number" id="taMa1mo2" min="2" max="300" inputmode="numeric" aria-label="月足の長期"><small>か月</small></td></tr>
             </tbody>
           </table>
-          <div class="ta-bb">ボリンジャー 期間<input type="number" id="taBbN" min="2" max="200" inputmode="numeric">σ<input type="number" id="taBbK" min="0.5" max="5" step="0.1" inputmode="decimal">
+          <div class="ta-bb"><span>ボリンジャー</span><label>期間<input type="number" id="taBbN" min="2" max="200" inputmode="numeric"><small>本</small></label><label>σ<input type="number" id="taBbK" min="0.5" max="5" step="0.1" inputmode="decimal"></label>
             <button type="button" class="btn sm" id="taReset">初期値に戻す</button></div>
-          <p class="muted small">期間は本数（日足なら日数、5分足なら5分の本数）。</p>
+          <p class="muted small ta-note">チェックを外した線は表示しません。「本」は足の数（5分足は1本＝5分、ボリンジャーは表示中の足の本数）。</p>
         </details>
       </section>
 
@@ -234,7 +237,7 @@
     </label>
     <ul id="addResults" class="results"></ul>
     <div class="grid2">
-      <label class="col">銘柄コード／ティッカー<input id="addCode" maxlength="8" autocomplete="off" autocapitalize="characters" placeholder="7203 / AAPL"></label>
+      <label class="col">銘柄コード／ティッカー<input id="addCode" maxlength="16" autocomplete="off" autocapitalize="characters" placeholder="7203 / AAPL"></label>
       <label class="col">市場<input id="addMarketLabel" readonly tabindex="-1" placeholder="自動判定"></label>
     </div>
     <label class="col">表示名<input id="addName" autocomplete="off" placeholder="トヨタ自動車"></label>

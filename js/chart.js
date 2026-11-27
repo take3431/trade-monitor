@@ -1,20 +1,22 @@
 // 表示レイヤー（ステージ）とチャート描画
 // ステージを2枚重ねておき、非表示側に描画してから切り替えることでチラつきを防ぐ。
-import { TF } from './data.js?v=20261127164219';
-import { isUS, isIndex, yahooJpUrl } from './names.js?v=20261127164219';
-import { fmtStamp } from './market.js?v=20261127164219';
+import { TF } from './data.js?v=20261127172538';
+import { isUS, isIndex, yahooJpUrl } from './names.js?v=20261127172538';
+import { smallDigits } from './alerts.js?v=20261127172538';
+import { fmtStamp } from './market.js?v=20261127172538';
 
 const LC = window.LightweightCharts;
 const JST = 9 * 3600;
 
-export const fmtPrice = (p) => {
+export const fmtPrice = (p, ref = p) => {
   if (p == null || Number.isNaN(p)) return '—';
+  if (ref && Math.abs(ref) < 1) { const d = smallDigits(ref); return p.toLocaleString('ja-JP', { minimumFractionDigits: d, maximumFractionDigits: d }); }
   const dec = Math.round(Math.abs(p) * 10) % 10 !== 0 ? 1 : 0;
   return p.toLocaleString('ja-JP', { minimumFractionDigits: dec, maximumFractionDigits: dec });
 };
-export const fmtSigned = (v, digits) => {
+export const fmtSigned = (v, digits, ref = v) => {
   if (v == null || Number.isNaN(v)) return '—';
-  const s = digits == null ? fmtPrice(Math.abs(v)) : Math.abs(v).toFixed(digits);
+  const s = digits == null ? fmtPrice(Math.abs(v), ref) : Math.abs(v).toFixed(digits);
   return (v > 0 ? '+' : v < 0 ? '−' : '±') + s;
 };
 const escHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -27,7 +29,7 @@ export function themeColors() {
   return {
     bg: cssVar('--chart-bg'), text: cssVar('--chart-text'), grid: cssVar('--chart-grid'),
     border: cssVar('--border'), up: cssVar('--up'), down: cssVar('--down'),
-    ma1: cssVar('--ma1'), ma2: cssVar('--ma2'), bb: cssVar('--bb'), cross: cssVar('--muted'),
+    ma1: cssVar('--ma1'), ma2: cssVar('--ma2'), ma3: cssVar('--ma3'), bb: cssVar('--bb'), cross: cssVar('--muted'),
   };
 }
 const alpha = (hex, a) => {
@@ -77,6 +79,11 @@ function toLcBars(raw) {
 }
 
 const pad = (n) => String(n).padStart(2, '0');
+function priceFormatOf(bars) {
+  const last = bars.length ? bars[bars.length - 1].close : 1;
+  const d = smallDigits(last);
+  return { type: 'price', precision: d, minMove: 10 ** -d };
+}
 function tickFmt(time, type) {
   const d = new Date(time * 1000);
   switch (type) {
@@ -88,8 +95,14 @@ function tickFmt(time, type) {
 }
 
 // テクニカル指標の設定（移動平均の期間・ボリンジャーバンドの期間とσ）
-export const TA_DEFAULT = { ma: { '5m': [5, 25], '1d': [5, 25], '1wk': [13, 26], '1mo': [12, 24] }, bb: { n: 20, k: 2 } };
-const taOf = (ta, tf) => ({ ma: ta?.ma?.[tf] || TF[tf].ma, bb: ta?.bb || TA_DEFAULT.bb });
+// 移動平均は短期・中期・長期の3本（既定は短期と中期を表示。中期・長期の色は ma2・ma3）
+export const TA_DEFAULT = {
+  ma: { '5m': [5, 25, 75], '1d': [5, 25, 75], '1wk': [13, 26, 52], '1mo': [12, 24, 60] },
+  maOn: [true, true, false],
+  bb: { n: 20, k: 2 },
+};
+const taOf = (ta, tf) => ({ ma: ta?.ma?.[tf] || TA_DEFAULT.ma[tf], on: ta?.maOn || TA_DEFAULT.maOn, bb: ta?.bb || TA_DEFAULT.bb });
+const MA_CLS = ['lg-ma1', 'lg-ma2', 'lg-ma3'];
 
 class Pane {
   constructor(card) {
@@ -104,6 +117,7 @@ class Pane {
   }
 
   build(ind, c) {
+    this.pf = null;
     if (this.chart) this.chart.remove();
     this.box.querySelector('.lc')?.remove();
     const host = document.createElement('div');
@@ -146,8 +160,7 @@ class Pane {
     });
     if (ind.ma) {
       const o = { lineWidth: 1.5, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false };
-      this.s.ma1 = ch.addLineSeries({ ...o, color: c.ma1 });
-      this.s.ma2 = ch.addLineSeries({ ...o, color: c.ma2 });
+      this.s.ma = [c.ma1, c.ma2, c.ma3].map((color) => ch.addLineSeries({ ...o, color }));
     }
     ch.subscribeCrosshairMove((p) => this.updateLegend(p));
     this.tf = null;
@@ -157,7 +170,7 @@ class Pane {
   setData(entry, tf, label, visibleBars, keepRange, loading = false, ta = null) {
     const t = TF[tf];
     const p = taOf(ta, tf);
-    const taKey = `${p.ma.join(',')}|${p.bb.n},${p.bb.k}`;
+    const taKey = `${p.ma.join(',')}|${p.on.join(',')}|${p.bb.n},${p.bb.k}`;
     this.titleEl.textContent = t.title;
     const raw = entry?.bars || [];
     this.msg.hidden = raw.length > 0;
@@ -180,19 +193,29 @@ class Pane {
     this.bars = bars;
     this.label = `${label}, ${t.short}, ${this.exch || 'TSE'}`;
     this.maLen = p.ma;
+    this.maOn = p.on;
     this.chart.applyOptions({ timeScale: { timeVisible: tf === '5m', secondsVisible: false } });
 
     const s = this.s;
+    // 1未満の値（暗号資産など）は、価格の刻みを細かくする（既定の0.01刻みだと値動きが描けない）
+    const pf = priceFormatOf(bars);
+    if (this.pf !== pf.precision) {
+      this.pf = pf.precision;
+      [s.candle, ...(s.ma || []), s.bbU, s.bbM, s.bbL].forEach((x) => x?.applyOptions({ priceFormat: pf }));
+    }
     s.candle.setData(bars);
     if (s.vol) {
       const up = alpha(this.colors.up, 0.45), dn = alpha(this.colors.down, 0.45);
       s.vol.setData(bars.map((b) => ({ time: b.time, value: b.volume, color: b.close >= b.open ? up : dn })));
     }
     this.ma = null;
-    if (s.ma1) {
-      const m1 = sma(bars, p.ma[0]), m2 = sma(bars, p.ma[1]);
-      s.ma1.setData(m1); s.ma2.setData(m2);
-      this.ma = [new Map(m1.map((x) => [x.time, x.value])), new Map(m2.map((x) => [x.time, x.value]))];
+    if (s.ma) {
+      // 表示しない線は計算もしない
+      this.ma = s.ma.map((line, i) => {
+        const d = p.on[i] ? sma(bars, p.ma[i]) : [];
+        line.setData(d);
+        return p.on[i] ? new Map(d.map((x) => [x.time, x.value])) : null;
+      });
     }
     if (s.bbU) {
       const b = bollinger(bars, p.bb.n, p.bb.k);
@@ -231,9 +254,11 @@ class Pane {
     if (bar) {
       html += `<span class="lg-o">始 ${fmtPrice(bar.open)} 高 ${fmtPrice(bar.high)} 安 ${fmtPrice(bar.low)} 終 <b class="${dirClass(bar.close - bar.open)}">${fmtPrice(bar.close)}</b></span>`;
       if (this.ma) {
-        const v1 = this.ma[0].get(bar.time), v2 = this.ma[1].get(bar.time);
-        html += `<span class="lg-ma1">MA${this.maLen[0]} ${fmtPrice(v1 != null ? Math.round(v1 * 10) / 10 : null)}</span>`;
-        html += `<span class="lg-ma2">MA${this.maLen[1]} ${fmtPrice(v2 != null ? Math.round(v2 * 10) / 10 : null)}</span>`;
+        this.ma.forEach((m, i) => {
+          if (!m) return;
+          const v = m.get(bar.time);
+          html += `<span class="${MA_CLS[i]}">MA${this.maLen[i]} ${fmtPrice(v != null && Math.abs(v) >= 1 ? Math.round(v * 10) / 10 : v)}</span>`;
+        });
       }
       if (this.s.bbU) html += `<span class="lg-bb">BB(${this.bb?.n ?? 20},${this.bb?.k ?? 2}σ)</span>`;
     }
@@ -313,11 +338,11 @@ export class Stage {
     const q = entries.quote;
     const isUs = isUS(item.code);
     const idx = isIndex(item.code);
-    const dec2 = (v) => v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const dec2 = (v, ref = v) => { const d = smallDigits(ref); return v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }); };
     // 指数・為替は単位を付けない（小数2桁）
     const money = (v) => (isUs ? 'US$' + dec2(v) : idx ? dec2(v) : fmtPrice(v) + '円');
     const sign = (v) => (v > 0 ? '+' : v < 0 ? '\u2212' : '\u00b1');
-    const signed = (v) => (isUs || idx ? sign(v) + dec2(Math.abs(v)) : fmtSigned(v));
+    const signed = (v) => (isUs || idx ? sign(v) + dec2(Math.abs(v), q.price) : fmtSigned(v, null, q.price)); // 桁数は株価に合わせる
     e.quote.hidden = !q || q.price == null;
     e.qFlag.hidden = true;
     if (q && q.price != null) {
@@ -381,12 +406,12 @@ export function miniChart(host, bars, tf, c, ind, ta) {
     upColor: c.up, downColor: c.down, borderUpColor: c.up, borderDownColor: c.down,
     wickUpColor: c.up, wickDownColor: c.down, priceLineVisible: false, lastValueVisible: true,
   });
+  cs.applyOptions({ priceFormat: priceFormatOf(data) });
   cs.setData(data);
   if (ind?.ma) {
     const p = taOf(ta, tf);
     const o = { lineWidth: 1, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false };
-    ch.addLineSeries({ ...o, color: c.ma1 }).setData(sma(data, p.ma[0]));
-    ch.addLineSeries({ ...o, color: c.ma2 }).setData(sma(data, p.ma[1]));
+    [c.ma1, c.ma2, c.ma3].forEach((color, i) => { if (p.on[i]) ch.addLineSeries({ ...o, color }).setData(sma(data, p.ma[i])); });
   }
   ch.timeScale().fitContent();
   return { destroy: () => ch.remove() };

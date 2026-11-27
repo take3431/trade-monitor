@@ -9,12 +9,14 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261127164219';
-import { yahooSymbol, marketOfCode } from './names.js?v=20261127164219';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261127172538';
+import { yahooSymbol, marketOfCode } from './names.js?v=20261127172538';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = yahooSymbol;
 const mkt = marketOfCode;
+// データの有効時間：東証・米国の取引時間外は、それ以外の銘柄（暗号資産・為替・先物など）を長めの間隔で更新する
+const ttlFor = (market, now = Date.now()) => (market !== 'JP' && market !== 'US' && !cfg.coreLive(now) ? Math.max(cfg.ttlMs, cfg.ttlOffMs) : cfg.ttlMs);
 
 const YH = ['https://query1.finance.yahoo.com', 'https://query2.finance.yahoo.com'];
 
@@ -32,6 +34,7 @@ export const TF = {
 
 const cfg = {
   proxy: '', fallback: true, demo: false, ttlMs: 120e3, timeout: 15000,
+  ttlOffMs: 120e3, coreLive: () => true, // 東証・米国の取引時間外は、暗号資産・為替・先物などを ttlOffMs ごとに更新
   approxOpen: false,          // true：当日の始値を近似する（表示対象が多いとき。openMode で取り方を決める）
   openMode: 'exact',          // 始値：exact＝1銘柄ずつ正確に ／ 1m・5m・15m＝最初の1分・5分・15分の値 ／ prev＝前日の終値で代用（通信なし）
   fullDays: 730,              // 10年分の定期の取り直しの間隔（日。銘柄ごとに最大59日ずらす）
@@ -1144,7 +1147,7 @@ async function refreshViaBatch(code, prio) {
     if (pos > cfg.liveAhead && dataLive(now, mkt(c))) continue;
     if (list.includes(c) || batchWaiters.has(c)) continue;
     const b = await getStored(c, 'base');
-    if (!b?.bars?.length || isFresh(b.fetchedAt, cfg.ttlMs, now, mkt(c))) continue;
+    if (!b?.bars?.length || isFresh(b.fetchedAt, ttlFor(mkt(c), now), now, mkt(c))) continue;
     if (needsFull(b, c)) continue; // 10年分の取り直しが必要な銘柄は、表示するときに個別に取得する
     if (!cfg.approxOpen && !hasTodayBar(b)) continue; // その銘柄を表示するときに個別に取得する
     list.push(c);
@@ -1235,7 +1238,7 @@ export async function loadSet(code, tfs, { force = false, onEntry = null, prio =
     const cur = await getStored(code, kind);
     const fresh = maxAgeMs != null && dataLive(Date.now(), market)
       ? cur && Date.now() - cur.fetchedAt < maxAgeMs
-      : cur && isFresh(cur.fetchedAt, kind === '5m' ? Math.max(cfg.ttl5Ms, 5 * 60e3) : cfg.ttlMs, Date.now(), market);
+      : cur && isFresh(cur.fetchedAt, kind === '5m' ? Math.max(cfg.ttl5Ms, 5 * 60e3) : ttlFor(market), Date.now(), market);
     if (!force && fresh) continue;
     // 5分足は1日の上限を超えたら取りに行かない（保存済みの5分足があればそれで表示）
     if (kind === '5m' && !force && !cfg.demo && i5Today().n >= cfg.cap5) continue;

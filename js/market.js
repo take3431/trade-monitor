@@ -3,7 +3,7 @@ const H = 3600e3;
 const MIN = 60e3;
 
 // 休場日は js/holidays.js（tools/gen-holidays.py で生成、2040年まで）
-import { JP_HOLIDAYS as HOLIDAYS, US_HOLIDAYS, US_EARLY_CLOSE } from './holidays.js?v=20261127164219';
+import { JP_HOLIDAYS as HOLIDAYS, US_HOLIDAYS, US_EARLY_CLOSE } from './holidays.js?v=20261127172538';
 
 // 前場 9:00-11:30 / 後場 12:30-15:30（分単位）
 const AM = [540, 690];
@@ -38,8 +38,10 @@ export function isTradingDay(y, m, d) {
 /* ---------------- 銘柄ごとの取引時間の種類 ----------------
    JP：東証（休場日の表つき） ／ US：米国（祝日・短縮取引日の表つき）
    HK・CN・KR・TW・IN・UK・DE・EU：各国の株価指数（下の SESSIONS の現地時間。各国の祝日は判定しない）
-   FX：為替（平日24時間。日本時間の土曜7:00〜月曜7:00と、FX_HOLIDAYS の日の7:00から24時間は休み）
-   FUT：先物（CME などほぼ24時間。FX と同じ扱い） ／ C：暗号資産（24時間・土日も）
+   FX：為替（平日24時間。米国東部時間の金曜17:00〜日曜17:00と、FX_HOLIDAYS の日（前日17:00から24時間）は休み）
+   FUT：先物（CME など。日曜18:00〜金曜17:00（米国東部時間）。毎日17:00〜18:00は休み。データは約10分遅れ）
+   AG・LV・SOFT・CTN：取引時間の短い商品先物（穀物・畜産・ソフト商品・綿花。下の SESSIONS の windows）
+   C：暗号資産（24時間・土日も）
    種類を足すときは SESSIONS に書き、names.js で銘柄に割り当てる。 */
 export const SESSIONS = {
   HK: { tz: 'Asia/Hong_Kong', open: 570, close: 960, label: '香港' },     // 9:30〜16:00
@@ -50,10 +52,21 @@ export const SESSIONS = {
   UK: { tz: 'Europe/London', open: 480, close: 990, label: '英国' },      // 8:00〜16:30
   DE: { tz: 'Europe/Berlin', open: 540, close: 1050, label: 'ドイツ' },   // 9:00〜17:30
   EU: { tz: 'Europe/Berlin', open: 540, close: 1050, label: '欧州' },     // 9:00〜17:30
+  /* 商品先物（取引時間が短いもの）。windows：{ days: 始まる曜日（0=日）, s: 開始（分）, e: 終了（分。1440を超えたら翌日） }。
+     取引時間外は値が変わらないので取りに行かない。データは約10分遅れ。各取引所の祝日は判定しない。 */
+  AG: { tz: 'America/Chicago', label: '穀物', delay: 10 * MIN, windows: [         // CBOT 穀物：夜間 19:00〜翌7:45、日中 8:30〜13:20（米国中部時間）
+    { days: [0, 1, 2, 3, 4], s: 1140, e: 1905 }, { days: [1, 2, 3, 4, 5], s: 510, e: 800 }] },
+  LV: { tz: 'America/Chicago', label: '畜産', delay: 10 * MIN, windows: [         // CME 畜産：8:30〜13:05（米国中部時間）
+    { days: [1, 2, 3, 4, 5], s: 510, e: 785 }] },
+  SOFT: { tz: 'America/New_York', label: 'ソフト商品', delay: 10 * MIN, windows: [ // ICE コーヒー・砂糖・ココア・オレンジジュース：3:30〜14:00（米国東部時間）
+    { days: [1, 2, 3, 4, 5], s: 210, e: 840 }] },
+  CTN: { tz: 'America/New_York', label: '綿花', delay: 10 * MIN, windows: [        // ICE 綿花：21:00〜翌14:20（米国東部時間）
+    { days: [0, 1, 2, 3, 4], s: 1260, e: 2300 }] },
 };
 // 為替の休日（日本時間の月-日。その日の7:00から24時間は休み）。必要に応じて足す
 export const FX_HOLIDAYS = ['01-01', '12-25'];
 const isFxLike = (m) => m === 'FX' || m === 'FUT' || m === 'X';
+const FUT_DELAY_MS = 10 * MIN; // CME などの先物は Yahoo で約10分遅れ
 const SESS_DELAY_MS = 15 * MIN; // 各国の指数は Yahoo で約15分遅れ
 // 表示用の名前（画面上部の状態）
 export const MARKET_LABEL = { JP: '東証', US: '米国', FX: '為替', FUT: '先物', C: '暗号資産', X: '為替' };
@@ -70,7 +83,17 @@ function local(t, tz) {
   for (const x of f.formatToParts(new Date(t))) o[x.type] = x.value;
   return { dow: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(o.weekday), key: `${o.year}-${pad(Number(o.month))}-${pad(Number(o.day))}`, min: (Number(o.hour) % 24) * 60 + Number(o.minute) };
 }
+// 取引時間が windows で書かれた種類（商品先物）
+function winOpen(now, s) {
+  for (const d of [0, 1]) {
+    const p = local(now - d * 24 * H, s.tz);
+    const m = local(now, s.tz).min + d * 1440;
+    if (s.windows.some((w) => w.days.includes(p.dow) && m >= w.s && m < w.e)) return true;
+  }
+  return false;
+}
 function sessPhase(now, s) {
+  if (s.windows) return winOpen(now, s) ? { open: true, code: 'open', label: '取引中' } : { open: false, code: 'closed', label: '取引時間外' };
   const p = local(now, s.tz);
   if (p.dow === 0 || p.dow === 6) return { open: false, code: 'holiday', label: '休場日' };
   if (p.min < s.open) return { open: false, code: 'pre', label: '取引開始前' };
@@ -102,7 +125,7 @@ export function awaitingToday(market, timeSec, now = Date.now()) {
     return usTradingDay(e) && e.min >= 570 && et(t).key !== e.key;
   }
   const s = SESSIONS[market];
-  if (s) {
+  if (s && !s.windows) {
     const p = local(now, s.tz);
     return p.dow > 0 && p.dow < 6 && p.min >= s.open && local(t, s.tz).key !== p.key;
   }
@@ -128,6 +151,7 @@ export function jpLimitWidth(prev) {
 export function marketPhase(now = Date.now(), market = 'JP') {
   if (market === 'US') return usPhase(now);
   if (market === 'C') return { open: true, code: 'open', label: '取引中（24時間）' }; // 暗号資産は土日も動く
+  if (market === 'FUT') return futPhase(now);
   if (isFxLike(market)) return xPhase(now);
   if (SESSIONS[market]) return sessPhase(now, SESSIONS[market]);
   const p = jst(now);
@@ -163,46 +187,62 @@ export function lastSessionEnd(now = Date.now()) {
 export const JP_DELAY_MS = 20 * MIN;
 export function dataLive(now = Date.now(), market = 'JP') {
   if (market === 'C') return true;              // 暗号資産は止めない
-  if (isFxLike(market)) return xPhase(now).open; // 為替・先物・商品は土日・休日だけ止める
-  if (SESSIONS[market]) return sessPhase(now - SESS_DELAY_MS, SESSIONS[market]).open; // 各国の指数（約15分遅れ）
+  if (market === 'FUT') return futPhase(now - FUT_DELAY_MS).open; // 先物（約10分遅れ）
+  if (isFxLike(market)) return xPhase(now).open; // 為替は週末・休日だけ止める
+  const s = SESSIONS[market];
+  if (s) return sessPhase(now - (s.delay ?? SESS_DELAY_MS), s).open; // 各国の指数（約15分遅れ）・商品先物（約10分遅れ）
   return market === 'US' ? marketPhase(now, 'US').open : marketPhase(now - JP_DELAY_MS, 'JP').open;
 }
 export function isFresh(fetchedAt, ttlMs, now = Date.now(), market = 'JP') {
   if (!fetchedAt) return false;
   if (!dataLive(now, market)) {
     const s = SESSIONS[market];
-    const end = market === 'US' ? usLastClose(now) : isFxLike(market) ? xLastClose(now) : s ? sessLastClose(now - SESS_DELAY_MS, s) : lastSessionEnd(now - JP_DELAY_MS);
-    const settle = end + (market === 'US' ? US_SETTLE_MS : isFxLike(market) ? 5 * MIN : s ? SESS_DELAY_MS + 5 * MIN : SETTLE_MS);
+    let end, settle;
+    if (market === 'US') { end = usLastClose(now); settle = end + US_SETTLE_MS; }
+    else if (market === 'FUT') { end = closedSince(now - FUT_DELAY_MS, 'FUT'); settle = end + FUT_DELAY_MS + 5 * MIN; }
+    else if (isFxLike(market)) { end = closedSince(now, 'FX'); settle = end + 5 * MIN; }
+    else if (s?.windows) { end = closedSince(now - s.delay, market); settle = end + s.delay + 5 * MIN; }
+    else if (s) { end = sessLastClose(now - SESS_DELAY_MS, s); settle = end + SESS_DELAY_MS + 5 * MIN; }
+    else { end = lastSessionEnd(now - JP_DELAY_MS); settle = end + SETTLE_MS; }
     if (now >= settle) return fetchedAt >= settle;
   }
   return now - fetchedAt < ttlMs;
 }
 
-/* ---------------- 海外の指数・為替・商品 ----------------
-   為替は日本時間の土曜朝〜月曜朝が休み。海外の株価指数・商品先物もこの間は動かないので、
-   土曜7:00〜月曜7:00（日本時間）は「週末の休み」とし、その前に取得済みなら通信しない。
-   （各国の祝日は判定しない。祝日は値が変わらないだけで、表示には影響しない） */
-const X_WEEKEND_START = 7 * 60; // 土曜7:00（為替の休日も、その日の7:00から24時間）
-const fxHoliday = (t) => FX_HOLIDAYS.includes(dayKey(t).slice(5));
+/* ---------------- 為替・先物 ----------------
+   為替：米国東部時間の金曜17:00に閉まり、日曜17:00に開く（日本時間では土曜6:00〜7:00ごろ〜月曜6:00〜7:00ごろ。夏時間で1時間ずれる）。
+         17:00 を1日の区切りとし、FX_HOLIDAYS の日（前日17:00から24時間）も休み。
+   先物（CME など）：日曜18:00〜金曜17:00（米国東部時間）。毎日17:00〜18:00は休み。
+   休みの間はその前に取得済みなら通信しない。（各取引所の祝日は判定しない。祝日は値が変わらないだけ） */
 function xPhase(now) {
-  const p = jst(now);
-  const weekend = (p.dow === 6 && p.min >= X_WEEKEND_START) || p.dow === 0 || (p.dow === 1 && p.min < X_WEEKEND_START);
-  if (weekend) return { open: false, code: 'holiday', label: '週末の休み' };
-  const holiday = (fxHoliday(now) && p.min >= X_WEEKEND_START) || (fxHoliday(now - 24 * H) && p.min < X_WEEKEND_START);
-  if (holiday) return { open: false, code: 'holiday', label: '休日' };
+  const d = et(now + 7 * H); // 17:00 を次の日の 0:00 とみなした「取引日」
+  if (d.dow === 0 || d.dow === 6) return { open: false, code: 'holiday', label: '週末の休み' };
+  if (FX_HOLIDAYS.includes(d.key.slice(5))) return { open: false, code: 'holiday', label: '休日' };
   return { open: true, code: 'open', label: '取引中' };
 }
-// 直近の「休み」の始まり（土曜7:00、または為替の休日の7:00。日本時間）
-function xLastClose(now) {
-  const p = jst(now);
-  const midnight = Date.UTC(p.y, p.m - 1, p.d) - 9 * H;
-  for (let i = 0; i < 9; i++) {
-    const day = midnight - i * 24 * H;
-    const t = day + X_WEEKEND_START * MIN;
-    if (t > now) continue;
-    if (jst(day).dow === 6 || fxHoliday(day)) return t;
+function futPhase(now) {
+  const x = xPhase(now);
+  if (!x.open) return x;
+  const e = et(now);
+  if (e.min >= 1020 && e.min < 1080) return { open: false, code: 'break', label: '休憩中' }; // 毎日 17:00〜18:00
+  return { open: true, code: 'open', label: '取引中' };
+}
+const kindOpen = (t, m) => (m === 'FUT' ? futPhase(t).open : m === 'FX' ? xPhase(t).open : winOpen(t, SESSIONS[m]));
+// 今の休みが始まった時刻（30分刻みでさかのぼってから1分単位で詰める。1分ごとに覚えておく）
+const closedMemo = new Map();
+function closedSince(now, m) {
+  const k = `${m}|${Math.floor(now / MIN)}`;
+  if (closedMemo.has(k)) return closedMemo.get(k);
+  let t = now;
+  for (let i = 0; i < 4 * 48 && !kindOpen(t, m); i++) t -= 30 * MIN;
+  let r = 0;
+  if (kindOpen(t, m)) {
+    while (t + MIN <= now && kindOpen(t + MIN, m)) t += MIN;
+    r = Math.floor((t + MIN) / MIN) * MIN;
   }
-  return 0;
+  if (closedMemo.size > 50) closedMemo.clear();
+  closedMemo.set(k, r);
+  return r;
 }
 
 /* ---------------- 米国市場（NYSE / NASDAQ） ----------------
