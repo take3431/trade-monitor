@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261127172538';
-import * as D from './data.js?v=20261127172538';
-import { Stage, themeColors, miniChart, TA_DEFAULT } from './chart.js?v=20261127172538';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, alarmKind, showAlertCard, initAlertCards } from './alerts.js?v=20261127172538';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE, categoryOf, CATEGORY_ORDER, readingOf } from './names.js?v=20261127172538';
+import * as M from './market.js?v=20261128152636';
+import * as D from './data.js?v=20261128152636';
+import { Stage, themeColors, miniChart, TA_DEFAULT } from './chart.js?v=20261128152636';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, alarmKind, showAlertCard, initAlertCards } from './alerts.js?v=20261128152636';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE, categoryOf, CATEGORY_ORDER, readingOf } from './names.js?v=20261128152636';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -131,6 +131,8 @@ const st = {
   code: saved.code || null, paused: !!saved.paused, remaining: settings.interval,
   touchUntil: 0, settingsOpen: false, lastError: null, seq: 0, prefetching: null,
   randomSeed: 1 + Math.floor(Math.random() * 2 ** 30), openSig: '',
+  // 順番ランダム：次の一巡の並び（先に決めておき、一巡の終わりに先読みできるようにする）・前の一巡の最後の銘柄（続けて同じ銘柄にしない）
+  randomNext: 1 + Math.floor(Math.random() * 2 ** 30), randomAvoid: null,
 };
 const stages = [new Stage($('stageA')), new Stage($('stageB'))];
 let front = 0;
@@ -267,13 +269,9 @@ function applyData() {
 }
 // 通信状況画面の「決まり」に、今の計画を表示する
 function renderPlan(plan) {
-  const n = enabledCount();
   const set = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
   const t = plan.ttlMin < 10 ? Math.round(plan.ttlMin * 10) / 10 : Math.round(plan.ttlMin);
-  const t5 = plan.ttl5Min < 10 ? Math.round(plan.ttl5Min * 10) / 10 : Math.round(plan.ttl5Min);
-  set('specLive', `取引時間中、同じ銘柄は${t}分ごとに最新化（表示対象${n}銘柄・切り替え${settings.interval}秒に合わせて自動で調整${plan.skip > 1 ? `。切り替えが速いので、毎回の表示では更新しない` : ''}）${plan.off ? `。東証・米国の取引時間外（夜間など）は、暗号資産・為替・先物などを約${Math.round(plan.ttlOffMin)}分ごと（1日の通信の上限に収めるため）` : ''}${plan.use5m ? `。5分足は1銘柄ずつの通信になるため約${t5}分ごと（1日${plan.cap5}回まで。超えたら保存済みの5分足で表示）` : ''}`);
-  set('specOpen', OPEN_LABEL[plan.openMode]);
-  set('specEst', `約${(plan.estKB / 1000).toFixed(1)}MB（取引日に1日中表示した場合の目安。目標3.5MB・上限4MB）`);
+  set('specLive', `取引時間中、同じ銘柄は約${t}分ごとに最新化${plan.off ? `（夜間など、日本・米国の取引時間外は約${Math.round(plan.ttlOffMin)}分ごと）` : ''}`);
 }
 function rebuildCharts() {
   const c = themeColors();
@@ -302,9 +300,10 @@ function activeCodes() {
     else if (mode === 'idx') en = en.filter((x) => isIndex(x.code));
     codes = en.map((x) => x.code);
   }
-  // 順番ランダム：開いている間は同じ並び（設定画面を閉じるたびに混ぜ直さない）
-  codes = mode === 'random' ? shuffled(codes, st.randomSeed) : orderCodes(codes);
-  activeCache = { ver: listVer, codes, pos: new Map(codes.map((c, i) => [c, i])) };
+  const base = codes;
+  // 順番ランダム：一巡の間は同じ並び（設定画面を閉じるたびに混ぜ直さない）。一巡したら混ぜ直す（go）
+  codes = mode === 'random' ? randomOrder(codes, st.randomSeed, st.randomAvoid) : orderCodes(codes);
+  activeCache = { ver: listVer, codes, base, pos: new Map(codes.map((c, i) => [c, i])) };
   return codes;
 }
 /* ---------------- 順番設定（自動切替の順番） ----------------
@@ -315,6 +314,26 @@ function seedHash(s, seed) { let h = (2166136261 ^ seed) >>> 0; for (let i = 0; 
 function shuffled(codes, seed) {
   const key = new Map(codes.map((c) => [c, seedHash(c, seed)]));
   return [...codes].sort((a, b) => key.get(a) - key.get(b));
+}
+// 順番ランダムの一巡の並び（先頭が前の一巡の最後と同じ銘柄なら、2番目と入れ替える）
+function randomOrder(codes, seed, avoid) {
+  const o = shuffled(codes, seed);
+  if (avoid && o.length > 1 && o[0] === avoid) [o[0], o[1]] = [o[1], o[0]];
+  return o;
+}
+// 順番ランダムで、今の一巡の最後の銘柄を表示しているか
+function randomAtEnd() {
+  if (settings.viewMode !== 'random') return false;
+  const codes = activeCodes();
+  return codes.length > 1 && activeCache.pos.get(st.code) === codes.length - 1;
+}
+// 次の一巡に進む（待ち時間なし：並びは前もって決めてあり、先読みも済んでいる）
+function nextRandomCycle() {
+  const last = activeCodes().at(-1);
+  st.randomSeed = st.randomNext;
+  st.randomNext = 1 + Math.floor(Math.random() * 2 ** 30);
+  st.randomAvoid = last;
+  listVer++;
 }
 const jaCollator = new Intl.Collator('ja', { numeric: true, sensitivity: 'base' });
 function orderCodes(codes) {
@@ -357,6 +376,19 @@ function neighbor(delta, from = st.code) {
 }
 // 次に表示する銘柄から n 件
 function upcomingFrom(n) {
+  if (settings.viewMode === 'random') {
+    // 順番ランダム：今の一巡の残り → 次の一巡の並び（前もって決めてある）の順
+    const codes = activeCodes();
+    const i = activeCache.pos.get(st.code) ?? -1;
+    const out = codes.slice(i + 1, i + 1 + n);
+    if (out.length < n && codes.length > 1) {
+      for (const c of randomOrder(activeCache.base, st.randomNext, codes.at(-1))) {
+        if (out.length >= n) break;
+        if (c !== st.code && !out.includes(c)) out.push(c);
+      }
+    }
+    return out;
+  }
   const out = [];
   let code = st.code;
   for (let i = 0; i < n; i++) {
@@ -367,6 +399,8 @@ function upcomingFrom(n) {
   return out;
 }
 const userIsTouching = () => Date.now() < st.touchUntil;
+// 次に表示する銘柄（順番ランダムでは、一巡の終わりの次は次の一巡の先頭）
+const nextCode = () => (settings.viewMode === 'random' ? upcomingFrom(1)[0] ?? neighbor(1) : neighbor(1));
 // 自動切替で表示する銘柄の数（通信の計画もこの数で立てる）
 function enabledCount() { return activeCodes().length; }
 const marketOf = marketOfCode;
@@ -500,7 +534,10 @@ async function present(item, entries, seq, loading = false) {
 }
 
 function go(delta, nav = true, auto = false) {
-  let code = neighbor(delta);
+  // 順番ランダム：全部表示したら、混ぜ直して次の一巡の先頭へ
+  const wrapRandom = delta > 0 && randomAtEnd();
+  if (wrapRandom) nextRandomCycle();
+  let code = wrapRandom ? activeCodes()[0] : neighbor(delta);
   if (delta > 0 && (settings.order === 'up' || settings.order === 'down') && code && activeCache.pos.get(code) === 0 && settings.viewMode !== 'random') {
     listVer++; // 一巡したので、最新の前日比で並べ直して先頭から
     code = activeCodes()[0];
@@ -583,7 +620,7 @@ function tick() {
   if (!pauseReason(now) && enabledCount() > 0) {
     st.remaining--;
     const lead = st.lead ?? Math.min(PREFETCH_SEC, settings.interval - 2);
-    if (st.remaining === lead) prefetch(neighbor(1));
+    if (st.remaining === lead) prefetch(nextCode());
     if (st.remaining <= 0) go(1, false, true);
   }
   renderCountdown(now);
@@ -744,7 +781,7 @@ function closeSettings(apply = false) {
     else if (viewChanged && stages[front].code === code && stages[front].entries) render(stages[front], list.find((x) => x.code === code), stages[front].entries, true);
     show(code);
   } else showEmpty(true);
-  if (viewChanged) { setTimeout(() => prefetch(neighbor(1)), 1500); }
+  if (viewChanged) { setTimeout(() => prefetch(nextCode()), 1500); }
   if (settings.wakeLock) keepAwake(); else if (wake) { wake.release(); wake = null; }
   renderCountdown();
 }
@@ -1153,12 +1190,22 @@ $('selOvBars').addEventListener('change', () => {
   save(KEY.settings, settings);
   renderOverview();
 });
-// チャートの縦横比を、株価画面のチャートに合わせる（横長すぎ・縦長すぎにはしない）
+// チャートの縦横比：株価画面のチャートの高さの約0.7倍（横長すぎ・縦長すぎにはしない）。
+// さらに、カード1枚（見出し＋チャート）が一覧の画面の高さに収まるようにする
+const OC_HEIGHT = 0.7;
 function ocAspect() {
   const box = stages[front].root.querySelector('.chart-box');
   const w = box?.clientWidth, h = box?.clientHeight;
-  const ar = w && h ? Math.min(1.6, Math.max(0.75, w / h)) : 1;
-  $('ovCharts').style.setProperty('--oc-ar', ar.toFixed(3));
+  let ar = w && h ? Math.min(1.6, Math.max(0.75, w / h)) / OC_HEIGHT : 1.4;
+  const wrap = $('ovCharts');
+  const cs = getComputedStyle(wrap);
+  const cols = cs.gridTemplateColumns.split(' ').length || 1;
+  const gap = parseFloat(cs.columnGap) || 0;
+  const colW = (wrap.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - gap * (cols - 1)) / cols;
+  const fs = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  const availH = wrap.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - fs * 2.2; // 見出しの分を引く
+  if (colW > 0 && availH > 80) ar = Math.max(ar, colW / availH);
+  wrap.style.setProperty('--oc-ar', ar.toFixed(3));
 }
 const ocLive = new Map(); // code -> { chart, el }
 let ocObs = null;
@@ -1174,17 +1221,27 @@ function ocClear() {
   ocLive.clear();
   $('ovCharts').innerHTML = '';
 }
-function ocCardHtml(x) {
+// チャート一覧のカードの見出しの、現在値・前日比
+function ocQuoteHtml(x) {
   const q = quotes[x.code];
+  const us = isUS(x.code);
+  const idx = isIndex(x.code);
   const qs = quoteStatus(x.code, q);
   const waiting = qs?.state === 'pending' || qs?.state === 'special';
   const pct = waiting || q?.pct == null ? null : q.pct;
   const d = pct == null ? '' : pct > 0 ? 'up' : pct < 0 ? 'down' : '';
-  const t = qs?.state === 'pending' ? '−' : qs?.state === 'special' ? '特' : pct == null ? '' : `${pct > 0 ? '+' : pct < 0 ? '−' : '±'}${Math.abs(pct).toFixed(2)}%`;
-  return `<button type="button" class="oc-card" data-code="${esc(x.code)}">
-    <div class="oc-head"><span class="oc-code">${esc(x.code)}</span><span class="oc-name">${esc(x.name || '（名称未設定）')}</span><span class="oc-pct ${d}">${t}</span></div>
+  const sign = (v) => (v > 0 ? '+' : v < 0 ? '−' : '±');
+  const price = q?.price == null ? '' : `${ovMoney(q.price, us, idx)}${!us && !idx ? '<small>円</small>' : ''}`;
+  const chg = qs?.state === 'pending' ? '−' : qs?.state === 'special' ? '特'
+    : q?.chg == null ? '' : `${sign(q.chg)}${fmtNum(Math.abs(q.chg), us || idx, q.price)}${pct == null ? '' : ` (${sign(pct)}${Math.abs(pct).toFixed(2)}%)`}`;
+  return `<span class="oc-quote"><span class="oc-price">${price}</span><span class="oc-pct ${d}">${chg}</span></span>`;
+}
+// カードを押しても株価画面には移らない（スクロールの途中で触れても画面が変わらないように）
+function ocCardHtml(x) {
+  return `<div class="oc-card" data-code="${esc(x.code)}">
+    <div class="oc-head"><span class="oc-code">${esc(x.code)}</span><span class="oc-name">${esc(x.name || '（名称未設定）')}</span>${ocQuoteHtml(x)}</div>
     <div class="oc-box"><div class="oc-msg">　</div></div>
-  </button>`;
+  </div>`;
 }
 function renderCharts(rows) {
   ocClear();
@@ -1286,8 +1343,6 @@ function renderOverview() {
   $('ovChartTools').hidden = !ovCharts;
   $('ovGrid').hidden = ovCharts;
   $('ovCharts').hidden = !ovCharts;
-  $('ovHint').textContent = ovCharts ? 'カードを押すと、その銘柄のチャートを表示します'
-    : 'タイルを押すと、その銘柄のチャートを表示します ／ 色の濃さは前日比の大きさ';
   if (ovCharts) { $('ovGrid').innerHTML = ''; renderCharts(rows); } else { ocClear(); $('ovGrid').innerHTML = rows.map(tileHtml).join('') || '<p class="ov-empty">登録銘柄がありません</p>'; }
   renderOvSum();
 }
@@ -1302,22 +1357,15 @@ function updateTile(code) {
   const x = list.find((i) => i.code === code);
   if (!x || !overviewMode) return;
   if (ovCharts) { // チャート一覧：前日比の文字だけ書き換える（チャートは描き直さない）
-    const h = $('ovCharts').querySelector(`.oc-card[data-code="${CSS.escape(code)}"] .oc-pct`);
-    if (h) { const t = document.createElement('div'); t.innerHTML = ocCardHtml(x); const n = t.querySelector('.oc-pct'); if (n.outerHTML !== h.outerHTML) h.replaceWith(n); }
+    const h = $('ovCharts').querySelector(`.oc-card[data-code="${CSS.escape(code)}"] .oc-quote`);
+    if (h) { const html = ocQuoteHtml(x); if (html !== h.outerHTML) h.outerHTML = html; }
     return;
   }
   if (ovSort !== 'list') { scheduleOverview(); return; } // 並び順が変わるので全体を描き直す
   const el = $('ovGrid').querySelector(`[data-code="${CSS.escape(code)}"]`);
   if (el) el.outerHTML = tileHtml(x);
 }
-// タイルを押したら、その銘柄のチャートへ
-$('ovCharts').addEventListener('click', (e) => {
-  const t = e.target.closest('.oc-card');
-  if (!t) return;
-  st.code = t.dataset.code;
-  persistState();
-  closeSettings(false);
-});
+// タイルを押したら、その銘柄のチャートへ（チャート一覧のカードは押しても移らない）
 $('ovGrid').addEventListener('click', (e) => {
   const t = e.target.closest('.ov-tile');
   if (!t) return;
@@ -1343,7 +1391,7 @@ function renderViewDialog() {
   }).join('');
 }
 function setViewMode(mode) {
-  if (mode === 'random') st.randomSeed = 1 + Math.floor(Math.random() * 2 ** 30); // 選び直したら混ぜ直す
+  if (mode === 'random') { st.randomSeed = 1 + Math.floor(Math.random() * 2 ** 30); st.randomAvoid = null; } // 選び直したら混ぜ直す
   settings.viewMode = mode;
   save(KEY.settings, settings);
   listVer++;
@@ -1713,27 +1761,20 @@ function renderNet() {
   if (!netDlg.open) return;
   const now = Date.now();
   const ns = D.netStats();
+  const bs = D.budgetStatus();
   $('netSummary').innerHTML = `
-    <div><span class="k">直近1分</span><b>${ns.lastMin}</b><span class="u">/ ${ns.perMin}回</span></div>
-    <div><span class="k">今日</span><b>${D.budgetStatus().used}</b><span class="u">/ ${D.budgetStatus().cap}回（初回取り込み ${D.budgetStatus().init}/${D.INIT_CAP}）</span></div>
+    <div><span class="k">今日の通信</span><b>${bs.used}</b><span class="u">/ ${bs.cap}回</span></div>
     <div><span class="k">最終通信</span><b>${ns.lastAt ? M.fmtStamp(ns.lastAt, now) : '—'}</b></div>
-    <div><span class="k">保存データ</span><b>${storageText}</b></div>
-    <div><span class="k">状態</span><b>${ns.active ? '通信中' : ns.pausedUntil ? '一時停止中' : '待機中'}</b>${ns.queued ? `<span class="u">待ち${ns.queued}件</span>` : ''}</div>`;
+    <div><span class="k">状態</span><b>${ns.active ? '通信中' : ns.pausedUntil ? '一時停止中' : '待機中'}</b></div>`;
   const log = D.netLog();
-  $('netLogBody').innerHTML = log.length ? log.slice(0, 40).map((x) => `
+  $('netLogBody').innerHTML = log.length ? log.slice(0, 30).map((x) => `
     <tr class="${x.ok ? '' : 'ng'}">
       <td class="num">${M.fmtClock(x.t)}</td>
       <td>${esc(x.code)}</td>
-      <td>${esc(x.what)}<div class="muted small">${esc(x.route)}</div></td>
-      <td>${x.ok ? `成功 <span class="muted">${(x.ms / 1000).toFixed(1)}秒</span>` : `<span class="err">失敗</span>`}${x.note ? `<div class="muted small">${esc(x.note)}</div>` : ''}</td>
-    </tr>`).join('') : '<tr><td colspan="4" class="muted">この画面を開いてからの通信はまだありません（保存済みのデータで表示中）</td></tr>';
+      <td>${x.ok ? '成功' : '<span class="err">失敗</span>'}</td>
+    </tr>`).join('') : '<tr><td colspan="3" class="muted">この画面を開いてからの通信はまだありません</td></tr>';
 }
-let storageText = '—';
-async function refreshStorageText() {
-  const i = await D.storageInfo().catch(() => null);
-  if (i) storageText = `${(i.usage / 1048576).toFixed(1)}MB・${i.entries}件`;
-}
-function openNet() { refreshStorageText().then(renderNet); netDlg.showModal(); renderNet(); }
+function openNet() { netDlg.showModal(); renderNet(); }
 $('status').addEventListener('click', openNet);
 $('btnNetClose').addEventListener('click', () => netDlg.close());
 netDlg.addEventListener('click', (e) => { if (e.target === netDlg) netDlg.close(); });
@@ -1795,7 +1836,7 @@ renderCountdown();
 setInterval(tick, 1000);
 keepAwake();
 // 画面の向き・大きさが変わったら銘柄名の文字サイズを調整し直す
-window.addEventListener('resize', () => stages.forEach((s) => s.fitTitle()));
+window.addEventListener('resize', () => { stages.forEach((s) => s.fitTitle()); if (overviewMode && ovCharts) ocAspect(); });
 
 /* ---------------- 長時間運用のための見守り ----------------
    ・表示中のはずの銘柄が画面に出ていない状態が続いたら、描き直す

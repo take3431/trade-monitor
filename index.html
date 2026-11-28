@@ -11,15 +11,15 @@
      外部への通信に、このページの URL（参照元）を付けない。 -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://r.jina.ai https://api.allorigins.win https://api.codetabs.com; object-src 'none'; base-uri 'self'; form-action 'self'">
 <meta name="referrer" content="no-referrer">
-<meta name="app-version" content="20261127172538">
+<meta name="app-version" content="20261128152636">
 <meta name="theme-color" content="#0d1117">
 <title>TRADE MONITOR</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-180.png">
-<link rel="stylesheet" href="css/style.css?v=20261127172538">
-<script src="vendor/lightweight-charts.standalone.production.js?v=20261127172538"></script>
-<script type="module" src="js/gate.js?v=20261127172538"></script>
+<link rel="stylesheet" href="css/style.css?v=20261128152636">
+<script src="vendor/lightweight-charts.standalone.production.js?v=20261128152636"></script>
+<script type="module" src="js/gate.js?v=20261128152636"></script>
 </head>
 <body class="locked">
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -99,7 +99,6 @@
     </div>
     <div class="ov-grid" id="ovGrid"></div>
     <div class="ov-charts" id="ovCharts" hidden></div>
-    <p class="hint muted" id="ovHint">タイルを押すと、その銘柄のチャートを表示します ／ 色の濃さは前日比の大きさ</p>
   </section>
   <section class="card list-card">
     <div class="list-head">
@@ -256,18 +255,13 @@
   </div>
   <div class="net-summary" id="netSummary"></div>
   <dl class="net-spec">
-    <dt>更新間隔</dt><dd id="specLive">取引時間中、同じ銘柄は2分ごとに最新化</dd>
-    <dt>当日の始値</dt><dd id="specOpen">正確（1銘柄ずつ）</dd>
-    <dt>1日の通信量</dt><dd id="specEst">—</dd>
-    <dt>先読み</dt><dd>もうすぐ表示する銘柄を、表示の少し前にまとめて1回で取得</dd>
-    <dt>取引時間外</dt><dd>引け後のデータを取得済みなら通信しない</dd>
-    <dt>未取得の銘柄</dt><dd>15秒に1件ずつ取得（初回は日足10年分）。新規登録は1日100銘柄まで</dd>
-    <dt>通信の上限</dt><dd>1日300回（10年分の取り込みは別枠で1日150回）・1分12回（裏では4回）・同時2本（上限を超えたら翌日0時まで保存済みデータで表示）</dd>
-    <dt>データの遅れ</dt><dd>東証は約20分遅れ（データが動くのは 9:20〜11:50・12:50〜15:50）</dd>
-    <dt>取得先</dt><dd>Yahoo Finance（中継：r.jina.ai ほか）</dd>
+    <dt>更新間隔</dt><dd id="specLive">取引時間中、同じ銘柄は約2分ごとに最新化</dd>
+    <dt>データの遅れ</dt><dd>日本株は約20分遅れ（データが動くのは 9:20〜11:50・12:50〜15:50）。先物・商品は約10分遅れ、各国の指数は約15分遅れ</dd>
+    <dt>取引時間外</dt><dd>最新のデータを取得済みなら通信しません</dd>
+    <dt>通信の上限</dt><dd>1日300回まで（超えたら翌日0時まで保存済みのデータで表示）</dd>
   </dl>
-  <h4>最近の通信（新しい順）</h4>
-  <div class="net-log-wrap"><table class="net-log"><thead><tr><th>時刻</th><th>銘柄</th><th>内容</th><th>結果</th></tr></thead><tbody id="netLogBody"></tbody></table></div>
+  <h4>最近の通信</h4>
+  <div class="net-log-wrap"><table class="net-log"><thead><tr><th>時刻</th><th>銘柄</th><th>結果</th></tr></thead><tbody id="netLogBody"></tbody></table></div>
 </dialog>
 
 <dialog id="viewDialog" class="view-dialog">

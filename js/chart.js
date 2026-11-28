@@ -1,9 +1,9 @@
 // 表示レイヤー（ステージ）とチャート描画
 // ステージを2枚重ねておき、非表示側に描画してから切り替えることでチラつきを防ぐ。
-import { TF } from './data.js?v=20261127172538';
-import { isUS, isIndex, yahooJpUrl } from './names.js?v=20261127172538';
-import { smallDigits } from './alerts.js?v=20261127172538';
-import { fmtStamp } from './market.js?v=20261127172538';
+import { TF } from './data.js?v=20261128152636';
+import { isUS, isIndex, yahooJpUrl } from './names.js?v=20261128152636';
+import { smallDigits } from './alerts.js?v=20261128152636';
+import { fmtStamp } from './market.js?v=20261128152636';
 
 const LC = window.LightweightCharts;
 const JST = 9 * 3600;
@@ -299,7 +299,7 @@ export class Stage {
 
   // 銘柄名が長くて株価と重なる場合だけ、銘柄名の文字を小さくする（最小で元の55%）
   fitTitle() {
-    const { title, name, qChg, qFlag } = this.el;
+    const { title, name, qChg, qFlag, quote } = this.el;
     name.style.fontSize = '';
     qChg.style.fontSize = '';
     qFlag.style.fontSize = '';
@@ -310,12 +310,18 @@ export class Stage {
       scale -= 0.05;
       name.style.fontSize = `${scale.toFixed(2)}em`;
     }
-    // 銘柄名を小さくしても右の「何銘柄目・時刻」とぶつかるときは、前日比と「高」「安」も小さくする（現在値はそのまま）
+    // 銘柄名を小さくしても右の「何銘柄目・時刻」とぶつかるときは、前日比と「高」「安」も小さくする（現在値はそのまま）。
+    // スマホ縦のように現在値・前日比が銘柄名の下の行にあるときは、その行が入りきらないときだけ小さくする。
+    // 元の大きさは画面幅ごとの CSS の値を使う
+    const wrapped = quote.offsetTop > name.offsetTop + 4;
+    const over2 = () => (wrapped ? title.scrollWidth > title.clientWidth + 1 : over());
+    const baseChg = parseFloat(getComputedStyle(qChg).fontSize);
+    const baseFlag = parseFloat(getComputedStyle(qFlag).fontSize) || baseChg * 0.7;
     let q = 1;
-    while (over() && q > 0.6) {
+    while (over2() && q > 0.6) {
       q -= 0.05;
-      qChg.style.fontSize = `${(1.6 * q).toFixed(2)}rem`;
-      qFlag.style.fontSize = `${(1.1 * q).toFixed(2)}rem`;
+      qChg.style.fontSize = `${(baseChg * q).toFixed(1)}px`;
+      qFlag.style.fontSize = `${(baseFlag * q).toFixed(1)}px`;
     }
   }
 
