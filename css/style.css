@@ -656,12 +656,8 @@ body.in-settings .alert-stack { top: auto; right: auto; left: calc(1.2rem + env(
 .ov-top .ov-flags { min-width: 0; overflow: hidden; }
 @media (orientation: landscape) and (max-height: 520px) { .ov-grid { grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr)); } }
 @media (max-width: 400px) { .ov-chg .ov-time { font-size: .62rem; } .ov-badge { font-size: .6rem; padding: 0 .2rem; } .ov-top { gap: .25rem; } }
-/* 前日比％の位置：タブレットは前日比の値の右（下の行は右端に日時だけ）、スマホは値の下の行（右に日時） */
+/* 前日比％は前日比の値の右に、下の行は右端に日時（タブレット・スマホ共通） */
 .ov-chg { justify-content: flex-start; }
 .ov-chg .pct-r { margin-left: .35rem; }
 .ov-chg .ov-time { margin-left: auto; }
-.ov-chg .pct-b { display: none; }
-@media (max-width: 640px), (orientation: landscape) and (max-height: 520px) {
-  .ov-chg .pct-r { display: none; }
-  .ov-chg .pct-b { display: inline; }
-}
+@media (max-width: 400px) { .ov-chg { font-size: .8rem; } .ov-chg .pct-r { margin-left: .25rem; } }

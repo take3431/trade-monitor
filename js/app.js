@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261128174656';
-import * as D from './data.js?v=20261128174656';
-import { Stage, themeColors, miniChart, TA_DEFAULT } from './chart.js?v=20261128174656';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, alarmKind, showAlertCard, initAlertCards } from './alerts.js?v=20261128174656';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE, categoryOf, CATEGORY_ORDER, readingOf } from './names.js?v=20261128174656';
+import * as M from './market.js?v=20261128175300';
+import * as D from './data.js?v=20261128175300';
+import { Stage, themeColors, miniChart, TA_DEFAULT } from './chart.js?v=20261128175300';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, alarmKind, showAlertCard, initAlertCards } from './alerts.js?v=20261128175300';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE, categoryOf, CATEGORY_ORDER, readingOf } from './names.js?v=20261128175300';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -1331,8 +1331,16 @@ function tileHtml(x) {
     <div class="ov-name">${esc(x.name || '（名称未設定）')}</div>
     <div class="ov-price">${q ? ovMoney(q.price, us, idx) : '<span class="ov-empty">データ未取得</span>'}${q && !us && !idx ? '<small>円</small>' : ''}</div>
     <div class="ov-chg"><span class="v">${chg}${lim}</span><span class="v pct-r">${pctTxt ? `(${pctTxt})` : ''}</span></div>
-    <div class="ov-chg ov-pct"><span class="v pct-b">${pctTxt}</span><span class="ov-time">${q?.time ? M.fmtStamp(q.time * 1000) : ''}</span></div>
+    <div class="ov-chg ov-pct"><span class="ov-time">${q?.time ? M.fmtStamp(q.time * 1000) : ''}</span></div>
   </button>`;
+}
+// 前日比（値と％）の行がタイルの幅に入りきらないときだけ、その行の文字を小さくする（大きな値の銘柄・狭い画面）
+function fitChg(root) {
+  if (!root) return;
+  const rows = [...root.querySelectorAll('.ov-chg:not(.ov-pct)')];
+  const over = rows.map((r) => [r, r.scrollWidth, r.clientWidth]).filter(([, sw, cw]) => cw > 0 && sw > cw + 1) // まとめて測ってから
+    .map(([r, sw, cw]) => [r, parseFloat(getComputedStyle(r).fontSize) * Math.max(0.6, (cw - 2) / sw)]);
+  for (const [r, px] of over) r.style.fontSize = `${px.toFixed(1)}px`; // まとめて書き換える
 }
 function renderOverview() {
   const rows = [...list];
@@ -1350,7 +1358,7 @@ function renderOverview() {
   $('ovChartTools').hidden = !ovCharts;
   $('ovGrid').hidden = ovCharts;
   $('ovCharts').hidden = !ovCharts;
-  if (ovCharts) { $('ovGrid').innerHTML = ''; renderCharts(rows); } else { ocClear(); $('ovGrid').innerHTML = rows.map(tileHtml).join('') || '<p class="ov-empty">登録銘柄がありません</p>'; }
+  if (ovCharts) { $('ovGrid').innerHTML = ''; renderCharts(rows); } else { ocClear(); $('ovGrid').innerHTML = rows.map(tileHtml).join('') || '<p class="ov-empty">登録銘柄がありません</p>'; fitChg($('ovGrid')); }
   renderOvSum();
 }
 function renderOvSum() {
@@ -1370,7 +1378,7 @@ function updateTile(code) {
   }
   if (ovSort !== 'list') { scheduleOverview(); return; } // 並び順が変わるので全体を描き直す
   const el = $('ovGrid').querySelector(`[data-code="${CSS.escape(code)}"]`);
-  if (el) el.outerHTML = tileHtml(x);
+  if (el) { el.outerHTML = tileHtml(x); fitChg($('ovGrid').querySelector(`[data-code="${CSS.escape(code)}"]`)); }
 }
 // タイルを押したら、その銘柄のチャートへ（チャート一覧のカードは押しても移らない）
 $('ovGrid').addEventListener('click', (e) => {
