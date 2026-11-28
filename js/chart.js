@@ -1,9 +1,9 @@
 // 表示レイヤー（ステージ）とチャート描画
 // ステージを2枚重ねておき、非表示側に描画してから切り替えることでチラつきを防ぐ。
-import { TF } from './data.js?v=20261128152636';
-import { isUS, isIndex, yahooJpUrl } from './names.js?v=20261128152636';
-import { smallDigits } from './alerts.js?v=20261128152636';
-import { fmtStamp } from './market.js?v=20261128152636';
+import { TF } from './data.js?v=20261128160113';
+import { isUS, isIndex, yahooJpUrl } from './names.js?v=20261128160113';
+import { smallDigits } from './alerts.js?v=20261128160113';
+import { fmtStamp } from './market.js?v=20261128160113';
 
 const LC = window.LightweightCharts;
 const JST = 9 * 3600;
@@ -249,8 +249,8 @@ class Pane {
     let bar = null;
     if (p && p.time != null && p.seriesData) bar = p.seriesData.get(this.s.candle);
     if (!bar) bar = this.bars[this.bars.length - 1];
-    // 表示名は利用者が入力・貼り付けできるので、HTML として解釈させない
-    let html = `<span class="lg-t">${escHtml(this.label)}</span>`;
+    // 銘柄名・足種は上の見出しにあるので、チャート内には書かない（始値・高値・安値・終値と移動平均だけ）
+    let html = '';
     if (bar) {
       html += `<span class="lg-o">始 ${fmtPrice(bar.open)} 高 ${fmtPrice(bar.high)} 安 ${fmtPrice(bar.low)} 終 <b class="${dirClass(bar.close - bar.open)}">${fmtPrice(bar.close)}</b></span>`;
       if (this.ma) {
@@ -299,22 +299,26 @@ export class Stage {
 
   // 銘柄名が長くて株価と重なる場合だけ、銘柄名の文字を小さくする（最小で元の55%）
   fitTitle() {
-    const { title, name, qChg, qFlag, quote } = this.el;
+    const { title, name, code, qChg, qFlag, quote } = this.el;
     name.style.fontSize = '';
+    code.style.fontSize = '';
     qChg.style.fontSize = '';
     qFlag.style.fontSize = '';
     if (!title.clientWidth) return; // 非表示中は測れないので、表示時に再調整
     let scale = 1;
     const over = () => title.scrollWidth > title.clientWidth + 1 || name.scrollWidth > name.clientWidth + 1;
-    while (over() && scale > 0.55) {
+    // スマホ縦（現在値・前日比が銘柄名の下の行）では、銘柄コードも銘柄名と同じ大きさにそろえて小さくする
+    const stacked = quote.offsetTop > name.offsetTop + 4;
+    const overName = () => (stacked ? name.scrollWidth > name.clientWidth + 1 : over()); // 下の行の現在値の幅では銘柄名を小さくしない
+    while (overName() && scale > 0.55) {
       scale -= 0.05;
       name.style.fontSize = `${scale.toFixed(2)}em`;
+      if (stacked) code.style.fontSize = `${scale.toFixed(2)}em`;
     }
     // 銘柄名を小さくしても右の「何銘柄目・時刻」とぶつかるときは、前日比と「高」「安」も小さくする（現在値はそのまま）。
     // スマホ縦のように現在値・前日比が銘柄名の下の行にあるときは、その行が入りきらないときだけ小さくする。
     // 元の大きさは画面幅ごとの CSS の値を使う
-    const wrapped = quote.offsetTop > name.offsetTop + 4;
-    const over2 = () => (wrapped ? title.scrollWidth > title.clientWidth + 1 : over());
+    const over2 = () => (stacked ? title.scrollWidth > title.clientWidth + 1 : over());
     const baseChg = parseFloat(getComputedStyle(qChg).fontSize);
     const baseFlag = parseFloat(getComputedStyle(qFlag).fontSize) || baseChg * 0.7;
     let q = 1;

@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261128152636';
-import * as D from './data.js?v=20261128152636';
-import { Stage, themeColors, miniChart, TA_DEFAULT } from './chart.js?v=20261128152636';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, alarmKind, showAlertCard, initAlertCards } from './alerts.js?v=20261128152636';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE, categoryOf, CATEGORY_ORDER, readingOf } from './names.js?v=20261128152636';
+import * as M from './market.js?v=20261128160113';
+import * as D from './data.js?v=20261128160113';
+import { Stage, themeColors, miniChart, TA_DEFAULT } from './chart.js?v=20261128160113';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, alarmKind, showAlertCard, initAlertCards } from './alerts.js?v=20261128160113';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE, categoryOf, CATEGORY_ORDER, readingOf } from './names.js?v=20261128160113';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -309,6 +309,8 @@ function activeCodes() {
 /* ---------------- 順番設定（自動切替の順番） ----------------
    登録順・種類別・名前順・コード順・全銘柄シャッフル・値上がり率順・値下がり率順・アラート優先。
    登録銘柄一覧の並びそのものは変えない。 */
+// ボタンの下に出す短い名前（ボタンの幅を広げない）
+const ORDER_SHORT = { shuffle: 'シャッフル', up: '値上がり順', down: '値下がり順' };
 const ORDER_LABEL = { manual: '登録順', type: '種類別', name: '名前順', code: 'コード順', shuffle: '全銘柄シャッフル', up: '値上がり率順', down: '値下がり率順', alert: 'アラート優先' };
 function seedHash(s, seed) { let h = (2166136261 ^ seed) >>> 0; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
 function shuffled(codes, seed) {
@@ -1472,7 +1474,7 @@ renderViewButton();
 /* ---------------- 順番設定（その場で保存。× で戻るだけで反映） ---------------- */
 const orderDlg = $('orderDialog');
 function renderOrderButton() {
-  $('odCurrent').textContent = settings.order === 'manual' ? '' : `（${ORDER_LABEL[settings.order]}）`;
+  $('odCurrent').textContent = settings.order === 'manual' ? '' : `（${ORDER_SHORT[settings.order] || ORDER_LABEL[settings.order]}）`;
 }
 function renderOrderDialog() {
   $('odModes').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.order === settings.order));
