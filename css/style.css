@@ -565,9 +565,9 @@ body.in-settings .alert-stack { top: auto; right: auto; left: calc(1.2rem + env(
   .ov-tools { margin-left: 0; gap: .4rem; }
   .ov-tools .btn { height: 2rem; padding: 0 .6rem; font-size: .8rem; }
   .ov-grid { padding: .5rem; gap: .45rem; grid-template-columns: repeat(auto-fill, minmax(8.6rem, 1fr)); }
-  .ov-tile { min-height: 6.6rem; padding: .5rem .6rem; }
+  .ov-tile { padding: .5rem .6rem; }
   .ov-price { font-size: 1.25rem; }
-  .ov-chg { font-size: .8rem; flex-wrap: wrap; }
+  .ov-chg { font-size: .85rem; }
   .ov-ctools { padding: .4rem .6rem; gap: .6rem; }
   .ov-charts { padding: .5rem; gap: .5rem; }
   .oc-head { font-size: .8rem; padding: .3rem .5rem; gap: .4rem; }
@@ -641,3 +641,18 @@ body.in-settings .alert-stack { top: auto; right: auto; left: calc(1.2rem + env(
 /* 全銘柄一覧のタイル：行の高さは中身に合わせる（銘柄が多いと行が縮み、銘柄名の欄が潰れて見えなくなっていた） */
 .ov-grid { grid-auto-rows: max-content; }
 .ov-name { min-height: 1.3em; }
+
+/* 全銘柄一覧のタイル：どのタイルも同じ形（コード／銘柄名／現在値／前日比／前日比％と時刻 の5行）にして、
+   横に並んだタイルどうしで各行の位置がそろうようにする。各行は1行に固定（長いときは「…」で省略） */
+.ov-tile { grid-template-rows: auto auto auto auto auto; min-height: 0; align-content: start; }
+.ov-top { height: 1.35rem; white-space: nowrap; overflow: hidden; }
+.ov-price { align-self: auto; height: 1.2em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: .15rem; }
+.ov-price .ov-empty { font-size: .9rem; font-weight: 600; }
+.ov-chg { line-height: 1.35; height: 1.35em; white-space: nowrap; overflow: hidden; }
+.ov-chg .v { flex: none; }
+.ov-chg .ov-time { min-width: 0; overflow: hidden; text-overflow: ellipsis; } /* 狭いときは時刻のほうを省略（前日比は切らない） */
+.ov-name { line-height: 1.4; height: calc(1.4em + .3em); min-height: 0; } /* 銘柄名の行の高さを固定（文字の種類で高さが変わらないように） */
+.ov-top > span:first-child { flex: none; }
+.ov-top .ov-flags { min-width: 0; overflow: hidden; }
+@media (orientation: landscape) and (max-height: 520px) { .ov-grid { grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr)); } }
+@media (max-width: 400px) { .ov-chg .ov-time { font-size: .62rem; } .ov-badge { font-size: .6rem; padding: 0 .2rem; } .ov-top { gap: .25rem; } }

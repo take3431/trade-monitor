@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261128164939';
-import * as D from './data.js?v=20261128164939';
-import { Stage, themeColors, miniChart, TA_DEFAULT } from './chart.js?v=20261128164939';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, alarmKind, showAlertCard, initAlertCards } from './alerts.js?v=20261128164939';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE, categoryOf, CATEGORY_ORDER, readingOf } from './names.js?v=20261128164939';
+import * as M from './market.js?v=20261128173444';
+import * as D from './data.js?v=20261128173444';
+import { Stage, themeColors, miniChart, TA_DEFAULT } from './chart.js?v=20261128173444';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, alarmKind, showAlertCard, initAlertCards } from './alerts.js?v=20261128173444';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE, categoryOf, CATEGORY_ORDER, readingOf } from './names.js?v=20261128173444';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -1330,7 +1330,8 @@ function tileHtml(x) {
     <div class="ov-top"><span>${esc(x.code)}</span><span class="ov-flags">${flags}</span></div>
     <div class="ov-name">${esc(x.name || '（名称未設定）')}</div>
     <div class="ov-price">${q ? ovMoney(q.price, us, idx) : '<span class="ov-empty">データ未取得</span>'}${q && !us && !idx ? '<small>円</small>' : ''}</div>
-    <div class="ov-chg"><span class="v">${chg}${pctTxt ? ` (${pctTxt})` : ''}${lim}</span><span class="ov-time">${q?.time ? M.fmtStamp(q.time * 1000) : ''}</span></div>
+    <div class="ov-chg"><span class="v">${chg}${lim}</span></div>
+    <div class="ov-chg ov-pct"><span class="v">${pctTxt}</span><span class="ov-time">${q?.time ? M.fmtStamp(q.time * 1000) : ''}</span></div>
   </button>`;
 }
 function renderOverview() {
