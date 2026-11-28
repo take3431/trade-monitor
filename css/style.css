@@ -545,6 +545,7 @@ body.in-settings .alert-stack { top: auto; right: auto; left: calc(1.2rem + env(
   .c-code { width: 3.6rem; }
   .c-name { max-width: 9rem; }
   .c-sw { width: 3.6rem; }
+  table.list th.c-sw { padding-left: .1rem; padding-right: .1rem; white-space: nowrap; }
   .c-del { width: 2.6rem; }
   .c-price { width: 5rem; }
   .c-target { width: 7.5rem; }
@@ -621,7 +622,8 @@ body.in-settings .alert-stack { top: auto; right: auto; left: calc(1.2rem + env(
 
 /* 「銘柄表示設定」「順番設定」：今の設定は、ボタンの文字の下の行に小さく出す（ボタンの幅を広げず、ほかのボタンが2段にならないように） */
 #btnViewMode, #btnOrder { display: inline-grid; grid-template-columns: auto auto; column-gap: .4rem; align-content: center; justify-content: center; }
-#btnViewMode .ico, #btnOrder .ico { grid-row: 1 / span 2; align-self: center; }
+#btnViewMode .ico, #btnOrder .ico { align-self: center; }
+#btnViewMode:has(.vm-current:not(:empty)) .ico, #btnOrder:has(.vm-current:not(:empty)) .ico { grid-row: 1 / span 2; } /* 今の設定を出していないときは、文字を上下の中央に */
 #btnViewMode > span, #btnOrder > span { line-height: 1.15; }
 .list-actions .vm-current { grid-column: 2; margin: 0; font-size: .64rem; line-height: 1.1; text-align: center; white-space: nowrap; }
 .list-actions .vm-current:empty { display: none; }

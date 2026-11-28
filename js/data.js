@@ -9,8 +9,8 @@
 //     使わない「調整後終値（adjclose）」は取得しない（includeAdjustedClose=false、日足10年分で約2割軽くなる）。
 //  3. 優先度付きキュー：表示中 > 次の銘柄 > 裏での先回り取得 の順に通信し、同時通信数を制限する。
 //  4. 保存済みデータは古くても必ず表示し（stale-while-revalidate）、裏で更新する。
-import { isFresh, dayKey, dataLive } from './market.js?v=20261128160113';
-import { yahooSymbol, marketOfCode } from './names.js?v=20261128160113';
+import { isFresh, dayKey, dataLive } from './market.js?v=20261128163023';
+import { yahooSymbol, marketOfCode } from './names.js?v=20261128163023';
 
 // Yahoo のシンボル（日本株は .T を付ける。米国株はそのまま）
 const ySym = yahooSymbol;
@@ -899,6 +899,18 @@ export async function peekBars(code, tf) {
   if (tf === '1wk') return base.wk || aggregate(base.bars, weekKey);
   if (tf === '1mo') return base.mo || aggregate(base.bars, monthKey);
   return base.bars;
+}
+
+// 日足の保存データがある銘柄（チャート一覧で、描ける銘柄だけを並べるのに使う。キーの一覧だけを読むので軽い）
+export async function storedCodes() {
+  const out = new Set();
+  const pre = cfg.demo ? 'demo|' : '';
+  for (const [k, v] of mem) if (k.startsWith(pre) && k.endsWith('|base') && v?.bars?.length) out.add(k.slice(pre.length, -5));
+  if (!cfg.demo) {
+    const keys = (await idb('readonly', (s) => s.getAllKeys())) || [];
+    for (const k of keys) if (typeof k === 'string' && k.endsWith('|base') && !k.startsWith('demo|')) out.add(k.slice(0, -5));
+  }
+  return out;
 }
 
 export async function cachedSet(code, tfs) {

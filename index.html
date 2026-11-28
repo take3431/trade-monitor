@@ -11,15 +11,15 @@
      外部への通信に、このページの URL（参照元）を付けない。 -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://r.jina.ai https://api.allorigins.win https://api.codetabs.com; object-src 'none'; base-uri 'self'; form-action 'self'">
 <meta name="referrer" content="no-referrer">
-<meta name="app-version" content="20261128160113">
+<meta name="app-version" content="20261128163023">
 <meta name="theme-color" content="#0d1117">
 <title>TRADE MONITOR</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-180.png">
-<link rel="stylesheet" href="css/style.css?v=20261128160113">
-<script src="vendor/lightweight-charts.standalone.production.js?v=20261128160113"></script>
-<script type="module" src="js/gate.js?v=20261128160113"></script>
+<link rel="stylesheet" href="css/style.css?v=20261128163023">
+<script src="vendor/lightweight-charts.standalone.production.js?v=20261128163023"></script>
+<script type="module" src="js/gate.js?v=20261128163023"></script>
 </head>
 <body class="locked">
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -270,11 +270,11 @@
     <button type="button" class="icon-btn" id="btnViewClose" aria-label="閉じる"><svg class="ico"><use href="#i-close"/></svg></button>
   </div>
   <div class="vm-modes" id="vmModes">
-    <button type="button" data-mode="all">全銘柄表示<small>表示対象ONの銘柄を登録順に</small></button>
-    <button type="button" data-mode="random">順番ランダム<small>表示対象ONの銘柄をばらばらの順に</small></button>
-    <button type="button" data-mode="jp">日本株のみ<small>東証の銘柄（ETF を含む）</small></button>
-    <button type="button" data-mode="us">米国株のみ<small>米国の銘柄（ETF を含む）</small></button>
-    <button type="button" data-mode="idx">指数のみ<small>指数・先物・為替など</small></button>
+    <button type="button" data-mode="all">全銘柄表示</button>
+    <button type="button" data-mode="random">順番ランダム</button>
+    <button type="button" data-mode="jp">日本株のみ</button>
+    <button type="button" data-mode="us">米国株のみ</button>
+    <button type="button" data-mode="idx">指数のみ</button>
   </div>
   <h4>お気に入り</h4>
   <div class="vm-favs" id="vmFavs"></div>
@@ -286,14 +286,14 @@
     <button type="button" class="icon-btn" id="btnOrderClose" aria-label="閉じる"><svg class="ico"><use href="#i-close"/></svg></button>
   </div>
   <div class="vm-modes" id="odModes">
-    <button type="button" data-order="manual">登録順<small>登録銘柄一覧の並び（⋮⋮ で並び替え）</small></button>
-    <button type="button" data-order="type">種類別<small>日本株→米国株→指数→先物→商品→為替→暗号資産</small></button>
-    <button type="button" data-order="name">名前順<small>銘柄名のあいうえお順</small></button>
-    <button type="button" data-order="code">コード順<small>銘柄コードの小さい順</small></button>
-    <button type="button" data-order="shuffle">全銘柄シャッフル<small>選ぶたびに並びを混ぜ直す</small></button>
-    <button type="button" data-order="up">値上がり率順<small>前日比の大きい順（一巡ごとに並べ直す）</small></button>
-    <button type="button" data-order="down">値下がり率順<small>前日比の小さい順（一巡ごとに並べ直す）</small></button>
-    <button type="button" data-order="alert">アラート優先<small>アラートONの銘柄を先に（残りは登録順）</small></button>
+    <button type="button" data-order="manual">登録順</button>
+    <button type="button" data-order="type">種類別</button>
+    <button type="button" data-order="name">名前順</button>
+    <button type="button" data-order="code">コード順</button>
+    <button type="button" data-order="shuffle">全銘柄シャッフル</button>
+    <button type="button" data-order="up">値上がり率順</button>
+    <button type="button" data-order="down">値下がり率順</button>
+    <button type="button" data-order="alert">アラート優先</button>
   </div>
 </dialog>
 

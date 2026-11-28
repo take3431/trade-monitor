@@ -1,8 +1,8 @@
-import * as M from './market.js?v=20261128160113';
-import * as D from './data.js?v=20261128160113';
-import { Stage, themeColors, miniChart, TA_DEFAULT } from './chart.js?v=20261128160113';
-import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, alarmKind, showAlertCard, initAlertCards } from './alerts.js?v=20261128160113';
-import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE, categoryOf, CATEGORY_ORDER, readingOf } from './names.js?v=20261128160113';
+import * as M from './market.js?v=20261128163023';
+import * as D from './data.js?v=20261128163023';
+import { Stage, themeColors, miniChart, TA_DEFAULT } from './chart.js?v=20261128163023';
+import { parsePrice, fmtNum, crossed, unlockAudio, playAlarm, stopAlarm, alarmPlaying, alarmKind, showAlertCard, initAlertCards } from './alerts.js?v=20261128163023';
+import { lookupName, searchLocal, loadDict, dictReady, cleanQuery, isUS, isIndex, marketOfCode, JP_RE, US_RE, categoryOf, CATEGORY_ORDER, readingOf } from './names.js?v=20261128163023';
 
 const MAX_SYMBOLS = 999;
 const KEY = { list: 'tm.list.v1', settings: 'tm.settings.v1', state: 'tm.state.v1' };
@@ -1245,12 +1245,16 @@ function ocCardHtml(x) {
     <div class="oc-box"><div class="oc-msg">　</div></div>
   </div>`;
 }
-function renderCharts(rows) {
+async function renderCharts(rows) {
   ocClear();
   ocAspect();
   const gen = ocGen;
   const box = $('ovCharts');
-  box.innerHTML = rows.map(ocCardHtml).join('') || '<p class="ov-empty">登録銘柄がありません</p>';
+  // 保存済みのチャートデータが無い銘柄は並べない（この画面では通信しないため描けない）
+  const have = await D.storedCodes().catch(() => null);
+  if (gen !== ocGen) return;
+  const shown = have ? rows.filter((x) => have.has(x.code)) : rows;
+  box.innerHTML = shown.map(ocCardHtml).join('') || `<p class="ov-empty">${rows.length ? 'チャートを描ける保存済みのデータがありません' : '登録銘柄がありません'}</p>`;
   ocObs = new IntersectionObserver((ents) => {
     for (const en of ents) {
       const code = en.target.dataset.code;
@@ -1285,9 +1289,9 @@ async function ocPump(gen) {
       const all = await D.peekBars(code, tf); // 保存済みのデータだけ（通信しない）
       if (gen !== ocGen || tf !== ovTf) return;
       const boxEl = el.querySelector('.oc-box');
-      if (!all?.length) {
-        boxEl.innerHTML = '<div class="oc-msg">保存済みのデータがありません<br>（この画面では通信しないため描けません）</div>';
-        ocLive.set(code, { chart: null });
+      if (!all?.length) { // 保存データが消えていた銘柄は、カードごと外す
+        ocObs?.unobserve(el);
+        el.remove();
         continue;
       }
       boxEl.innerHTML = '';
