@@ -631,3 +631,13 @@ body.in-settings .alert-stack { top: auto; right: auto; left: calc(1.2rem + env(
   #btnViewMode, #btnOrder { grid-template-columns: auto; }
   .list-actions .vm-current { grid-column: auto; }
 }
+
+/* ===== 文字の欠けの防止 =====
+   「…」で省略する欄（overflow: hidden）は、行の高さの外にはみ出す g・y・p などの下の部分や、
+   日本語の上の部分が切れることがある。上下に余白を足し、同じだけ外側を詰めて（配置は変えずに）切れないようにする */
+.sym-title, .sym-name, .ov-name, .oc-head .oc-name, table.list .c-name .link, .results .nm, .fav-row .nm, .alert-card .a-title {
+  padding-top: .12em; padding-bottom: .18em; margin-top: -.12em; margin-bottom: -.18em;
+}
+/* 全銘柄一覧のタイル：行の高さは中身に合わせる（銘柄が多いと行が縮み、銘柄名の欄が潰れて見えなくなっていた） */
+.ov-grid { grid-auto-rows: max-content; }
+.ov-name { min-height: 1.3em; }
